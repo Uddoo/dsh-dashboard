@@ -1,0 +1,6 @@
+node_modules/
+lib/
+coverage/
+.dsh-dashboard/
+*.log
+.DS_Store

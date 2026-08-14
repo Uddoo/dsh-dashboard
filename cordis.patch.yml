@@ -1,0 +1,11 @@
+# dsh-dashboard is a Web-profile bundle. The row owns both the Host plugin and
+# the browser client declared by package.json#dsh.client.
+- insert:
+    - id: dsh-dashboard
+      name: dsh-dashboard
+      config:
+        workflowPath: WORKFLOW.md
+        permissionPreset: workspace-write
+        linear:
+          apiKeyRef: LINEAR_API_KEY
+          endpoint: https://api.linear.app/graphql
