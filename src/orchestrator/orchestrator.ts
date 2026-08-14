@@ -4,7 +4,6 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { TaskIssue } from '../domain/issue.ts'
 import { hasRequiredLabels, issueKey, normalizedState } from '../domain/issue.ts'
 import type { HarnessAgentRunner } from '../agent/harness-runner.ts'
-import type { LinearTaskSource } from '../linear/source.ts'
 import type {
   BoardColumn,
   DashboardSnapshot,
@@ -13,7 +12,7 @@ import type {
   TokenTotals,
 } from '../runtime/types.ts'
 import { addTokens, emptyTokens } from '../runtime/types.ts'
-import type { TaskSourceRegistry } from '../task-source/index.ts'
+import type { CreateTaskInput, TaskSourceRegistry, UpdateTaskInput } from '../task-source/index.ts'
 import type { WorkflowStore } from '../workflow/store.ts'
 import type { WorkflowDefinition } from '../workflow/types.ts'
 import type { WorkspaceManager } from '../workspace/manager.ts'
@@ -38,7 +37,6 @@ interface RetryRecord {
 export interface OrchestratorConfig {
   readonly permissionPreset: string
   readonly agentPreset?: string
-  readonly credentialRef: string
   readonly workerHost: string
 }
 
@@ -64,7 +62,6 @@ export class DashboardOrchestrator {
     private readonly sources: TaskSourceRegistry,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: HarnessAgentRunner,
-    private readonly linear: LinearTaskSource,
     private readonly config: OrchestratorConfig,
   ) {}
 
@@ -111,15 +108,22 @@ export class DashboardOrchestrator {
     const workflowStatus = this.workflow.status()
     const definition = workflowStatus.current
     const source = definition === undefined ? undefined : this.sources.require(definition.tracker.kind)
-    const credential: { configured: boolean; source?: string; writable: boolean } = await this.linear
-      .credentialStatus()
-      .catch(() => ({ configured: false, writable: false }))
+    const credentials = source === undefined ? [] : await source.credentialStatuses?.().catch(() => []) ?? []
+    const capabilities = source?.capabilities?.() ?? { create: false, update: false, delete: false, states: [] }
+    const firstCredential = credentials[0]
+    const context = source?.context()
     const runtimeIssues = [...this.runtimeArchive.values()].sort(runtimeOrder)
     const totals = runtimeIssues.reduce((sum, item) => addTokens(sum, item.tokens), emptyTokens())
     return {
       version: 1,
       generatedAt: new Date().toISOString(),
-      ...(source === undefined ? {} : { context: source.context() }),
+      ...(context === undefined ? {} : { context }),
+      taskMutations: {
+        canCreate: capabilities.create,
+        canUpdate: capabilities.update,
+        canDelete: capabilities.delete,
+        states: capabilities.states,
+      },
       paused: this.paused,
       board: {
         columns: definition === undefined ? [] : buildColumns(this.board, definition),
@@ -141,7 +145,7 @@ export class DashboardOrchestrator {
         ...(definition === undefined ? {} : {
           workflowLoadedAt: definition.loadedAt,
           trackerKind: definition.tracker.kind,
-          projectRef: definition.tracker.provider.project_slug,
+          ...(context === undefined ? {} : { projectRef: context.projectRef }),
           workspaceRoot: definition.workspace.root,
           maxConcurrentAgents: definition.agent.max_concurrent_agents,
           maxTurns: definition.agent.max_turns,
@@ -152,12 +156,46 @@ export class DashboardOrchestrator {
         terminalStates: definition?.tracker.terminal_states ?? [],
         permissionPreset: this.config.permissionPreset,
         ...(this.config.agentPreset === undefined ? {} : { agentPreset: this.config.agentPreset }),
-        credentialRef: this.config.credentialRef,
-        credentialConfigured: credential.configured,
-        ...(credential.source === undefined ? {} : { credentialSource: credential.source }),
-        credentialWritable: credential.writable,
+        credentials,
+        ...(firstCredential === undefined ? {} : {
+          credentialRef: firstCredential.ref,
+          credentialConfigured: firstCredential.configured,
+          ...(firstCredential.source === undefined ? {} : { credentialSource: firstCredential.source }),
+          credentialWritable: firstCredential.writable,
+        }),
       },
     }
+  }
+
+  async createTask(input: CreateTaskInput, signal?: AbortSignal): Promise<void> {
+    const definition = this.workflow.require()
+    const source = this.sources.require(definition.tracker.kind)
+    if (source.createTask === undefined) throw new Error(`Task source ${source.kind} does not support Dashboard task creation`)
+    await source.createTask(input, signal)
+    await this.refreshAfterMutation()
+  }
+
+  async updateTask(nativeRef: string, input: UpdateTaskInput, signal?: AbortSignal): Promise<void> {
+    const definition = this.workflow.require()
+    const source = this.sources.require(definition.tracker.kind)
+    if (source.updateTask === undefined) throw new Error(`Task source ${source.kind} does not support Dashboard task updates`)
+    await source.updateTask(nativeRef, input, signal)
+    await this.refreshAfterMutation()
+  }
+
+  async deleteTask(nativeRef: string, signal?: AbortSignal): Promise<boolean> {
+    const definition = this.workflow.require()
+    const source = this.sources.require(definition.tracker.kind)
+    if (source.deleteTask === undefined) throw new Error(`Task source ${source.kind} does not support Dashboard task deletion`)
+    const deleted = await source.deleteTask(nativeRef, signal)
+    if (deleted) await this.refreshAfterMutation()
+    return deleted
+  }
+
+  /** Wait out a poll that may have captured pre-mutation state, then force one fresh read. */
+  private async refreshAfterMutation(): Promise<void> {
+    while (this.refreshing !== undefined) await this.refreshing
+    await this.refresh()
   }
 
   issueDetail(key: string): IssueDetailView | undefined {
@@ -421,6 +459,20 @@ export class DashboardOrchestrator {
 
 function buildColumns(issues: readonly TaskIssue[], workflow: WorkflowDefinition): BoardColumn[] {
   const stateMap = new Map<string, { name: string; type?: string; color?: string; position: number; issues: TaskIssue[] }>()
+  const declaredStates = [...new Set([
+    ...workflow.dashboard.visible_states,
+    ...workflow.tracker.active_states,
+    ...workflow.tracker.terminal_states,
+  ])]
+  const terminal = new Set(workflow.tracker.terminal_states.map(normalizedState))
+  for (const [position, name] of declaredStates.entries()) {
+    stateMap.set(normalizedState(name), {
+      name,
+      type: terminal.has(normalizedState(name)) ? 'completed' : 'started',
+      position,
+      issues: [],
+    })
+  }
   for (const issue of issues) {
     const key = normalizedState(issue.state.name)
     const existing = stateMap.get(key)
@@ -434,7 +486,7 @@ function buildColumns(issues: readonly TaskIssue[], workflow: WorkflowDefinition
       })
     } else {
       existing.issues.push(issue)
-      existing.position = Math.min(existing.position, issue.state.position ?? Number.MAX_SAFE_INTEGER)
+      existing.position = Math.min(existing.position, issue.state.position ?? existing.position)
     }
   }
   const visible = new Set(workflow.dashboard.visible_states.map(normalizedState))

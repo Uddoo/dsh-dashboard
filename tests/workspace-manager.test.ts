@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TaskIssue } from '../src/domain/issue.ts'
 import type { WorkflowDefinition } from '../src/workflow/types.ts'
 import { WorkspaceManager } from '../src/workspace/manager.ts'
+import { issueWorkspaceLeaf } from '../src/workspace/path-safety.ts'
 
 const temporaryRoots: string[] = []
 
@@ -20,7 +21,7 @@ describe('WorkspaceManager lifecycle safety', () => {
     const failed = workflow(root, { after_create: 'exit 7' })
 
     await expect(manager.prepare(issue, failed)).rejects.toThrow('after_create exited with 7')
-    await expect(stat(join(root, issue.identifier))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(join(root, issueWorkspaceLeaf(issue)))).rejects.toMatchObject({ code: 'ENOENT' })
 
     const retried = await manager.prepare(issue, workflow(root))
     expect(retried.createdNow).toBe(true)
@@ -39,12 +40,13 @@ describe('WorkspaceManager lifecycle safety', () => {
     expect(error).toBeInstanceOf(Error)
     expect((error as Error).message).toContain('after_create exited with 9')
     expect((error as Error).message.length).toBeLessThan(5000)
-    await expect(stat(join(root, issue.identifier))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(join(root, issueWorkspaceLeaf(issue)))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 
 const issue: TaskIssue = {
   sourceKind: 'linear',
+  scopeRef: 'ENG',
   nativeRef: 'issue-1',
   identifier: 'ENG-1',
   title: 'Workspace lifecycle',

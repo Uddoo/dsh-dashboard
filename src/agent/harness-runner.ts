@@ -12,8 +12,9 @@ import type {} from '@deepseek-ai/dsh-permission-presets'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { TaskIssue } from '../domain/issue.ts'
-import { normalizedState } from '../domain/issue.ts'
+import { issueKey, normalizedState } from '../domain/issue.ts'
 import type { TaskSource } from '../task-source/index.ts'
+import { resolveTaskSourceAgentTool } from '../task-source/index.ts'
 import type { IssueRuntimeView, RuntimeEventView, TokenTotals } from '../runtime/types.ts'
 import { emptyTokens } from '../runtime/types.ts'
 import { promptFingerprint, renderIssuePrompt } from '../workflow/prompt.ts'
@@ -59,7 +60,7 @@ export class HarnessAgentRunner {
     }
     const resolvedPreset = presets === undefined ? undefined : await presets.resolve(this.config.agentPreset)
     let runtime: IssueRuntimeView = {
-      key: `${issue.sourceKind}:${issue.nativeRef}`,
+      key: issueKey(issue),
       identifier: issue.identifier,
       phase: 'running',
       state: issue.state.name,
@@ -92,7 +93,7 @@ export class HarnessAgentRunner {
         setup: async (agentCtx) => {
           if (presets !== undefined) await presets.mount(agentCtx, resolvedPreset?.id)
           installModelSelection(agentCtx, selected)
-          this.installLinearTool(agentCtx, source)
+          this.installTaskSourceTool(agentCtx, source)
         },
       })
       this.ctx.permissionPresets.set(handle.agent.session, this.config.permissionPreset)
@@ -162,24 +163,78 @@ export class HarnessAgentRunner {
     }
   }
 
-  private installLinearTool(agentCtx: Context, source: TaskSource): void {
-    if (source.executeRaw === undefined) return
+  private installTaskSourceTool(agentCtx: Context, source: TaskSource): void {
+    const tool = resolveTaskSourceAgentTool(source)
+    if (tool === undefined) return
     const tools = agentCtx.get('tools')
     if (tools === undefined) throw new Error('dsh-dashboard: ctx.tools is unavailable in the Agent scope')
-    const executeRaw = source.executeRaw.bind(source)
+    if (tool.kind === 'graphql') {
+      tools.register(defineTool({
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          query: { type: 'string', required: true, description: 'GraphQL query or mutation document.' },
+          variables: { type: 'object', additionalProperties: true, description: 'Optional GraphQL variables object.' },
+        },
+        output: {
+          schema: { type: 'json' },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+        },
+        async execute(args, exec) {
+          return await tool.execute(args.query, args.variables ?? {}, exec.signal) as never
+        },
+      }))
+      return
+    }
+    if (tool.kind === 'rest') {
+      tools.register(defineTool({
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], required: true },
+          path: { type: 'string', required: true, description: 'Provider-relative API path without an origin.' },
+          query: { type: 'object', additionalProperties: true, description: 'Optional query parameters.' },
+          body: { type: 'json', description: 'Optional lossless-JSON request body.' },
+        },
+        output: {
+          schema: { type: 'json' },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+        },
+        async execute(args, exec) {
+          return await tool.execute({
+            method: args.method,
+            path: args.path,
+            ...(args.query === undefined ? {} : { query: args.query }),
+            ...(args.body === undefined ? {} : { body: args.body }),
+          }, exec.signal) as never
+        },
+      }))
+      return
+    }
     tools.register(defineTool({
-      name: 'linear_graphql',
-      description: 'Execute a raw GraphQL query or mutation against the configured Linear workspace. Credentials and endpoint are supplied by dsh-dashboard; never include a token.',
+      name: tool.name,
+      description: tool.description,
       parameters: {
-        query: { type: 'string', required: true, description: 'GraphQL query or mutation document.' },
-        variables: { type: 'object', additionalProperties: true, description: 'Optional GraphQL variables object.' },
+        operation: { type: 'string', enum: ['get', 'update'], required: true },
+        nativeRef: { type: 'string', required: true },
+        title: { type: 'string' },
+        description: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+        state: { type: 'string' },
+        priority: { oneOf: [{ type: 'integer' }, { type: 'null' }] },
       },
       output: {
         schema: { type: 'json' },
         render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
       },
       async execute(args, exec) {
-        return await executeRaw(args.query, args.variables ?? {}, exec.signal) as never
+        return await tool.execute({
+          operation: args.operation,
+          nativeRef: args.nativeRef,
+          ...(args.title === undefined ? {} : { title: args.title }),
+          ...(args.description === undefined ? {} : { description: args.description }),
+          ...(args.state === undefined ? {} : { state: args.state }),
+          ...(args.priority === undefined ? {} : { priority: args.priority }),
+        }, exec.signal) as never
       },
     }))
   }

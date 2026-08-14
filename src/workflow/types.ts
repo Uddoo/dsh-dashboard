@@ -2,11 +2,8 @@
 
 export interface WorkflowTracker {
   readonly kind: string
-  readonly provider: {
-    readonly project_slug: string
-    readonly context_label?: string
-    readonly assignee?: string
-  }
+  /** Provider-owned routing fields validated by the selected TaskSource. */
+  readonly provider: Readonly<Record<string, unknown>>
   readonly required_labels: readonly string[]
   readonly active_states: readonly string[]
   readonly terminal_states: readonly string[]

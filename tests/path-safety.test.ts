@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { assertContained, resolveWorkspaceRoot, workspaceLeaf } from '../src/workspace/path-safety.ts'
+import { issueKey } from '../src/domain/issue.ts'
+import { assertContained, issueWorkspaceLeaf, resolveWorkspaceRoot, workspaceLeaf } from '../src/workspace/path-safety.ts'
 
 describe('workspace path safety', () => {
   it('keeps already-safe identifiers unchanged', () => {
@@ -23,5 +24,12 @@ describe('workspace path safety', () => {
 
   it('resolves relative roots against the supplied process directory', () => {
     expect(resolveWorkspaceRoot('.dashboard', 'C:\\repo')).toBe(resolve('C:\\repo', '.dashboard'))
+  })
+
+  it('keeps identical provider-native ids isolated between configured projects', () => {
+    const first = { sourceKind: 'github', scopeRef: 'openai/one', nativeRef: '12', identifier: '#12' }
+    const second = { ...first, scopeRef: 'openai/two' }
+    expect(issueKey(first)).not.toBe(issueKey(second))
+    expect(issueWorkspaceLeaf(first)).not.toBe(issueWorkspaceLeaf(second))
   })
 })

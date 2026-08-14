@@ -14,7 +14,7 @@ function DevApp() {
   return (
     <DashboardSurface
       snapshot={snapshot}
-      initialSelectedKey="linear:issue-238"
+      initialSelectedKey="linear:ENG:issue-238"
       onRefresh={async () => {
         setSnapshot(current => ({
           ...current,
@@ -33,6 +33,9 @@ function DevApp() {
           },
         }))
       }}
+      onCreateTask={async () => {}}
+      onUpdateTask={async () => {}}
+      onDeleteTask={async () => {}}
       onOpenSession={() => {}}
     />
   )

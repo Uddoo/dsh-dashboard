@@ -69,5 +69,5 @@ No description was provided.
 {% endif %}
 
 Work only in the provided workspace. Keep the tracker workpad and state current
-through the available Linear integration. Continue autonomously until the issue
+through the available tracker integration. Continue autonomously until the issue
 leaves an active state or a true external blocker prevents progress.

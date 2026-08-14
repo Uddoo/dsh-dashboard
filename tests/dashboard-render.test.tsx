@@ -14,14 +14,17 @@ describe('Dashboard visual contract', () => {
     expect(markup).toContain('aria-pressed="true"')
   })
 
-  it('renders the approved Phase 1 title, dynamic context, board, and inspector without a create control', () => {
+  it('renders the approved title, dynamic remote context, board, and inspector without local create controls', () => {
     const markup = renderToStaticMarkup(
       <DashboardSurface
         snapshot={fixtureSnapshot}
-        initialSelectedKey="linear:issue-238"
+        initialSelectedKey="linear:ENG:issue-238"
         onRefresh={async () => {}}
         onPause={async () => {}}
         onStop={async () => {}}
+        onCreateTask={async () => {}}
+        onUpdateTask={async () => {}}
+        onDeleteTask={async () => {}}
         onOpenSession={() => {}}
       />,
     )
@@ -34,6 +37,31 @@ describe('Dashboard visual contract', () => {
     expect(markup).toContain('role="region"')
     expect(markup).not.toContain('DeepSeek Harness navigation')
     expect(markup).not.toContain('aria-modal="true"')
-    expect(markup).not.toMatch(/aria-label="(Add|Create)|>\+</u)
+    expect(markup).not.toMatch(/aria-label="Add task/u)
+  })
+
+  it('adds a column-scoped plus control only for the Host-local task source', () => {
+    const localSnapshot = {
+      ...fixtureSnapshot,
+      context: { kind: 'local', providerLabel: 'Local', projectLabel: 'Personal', projectRef: 'personal' },
+      taskMutations: { canCreate: true, canUpdate: true, canDelete: true, states: ['Backlog', 'Todo', 'In Progress', 'Done'] },
+      configuration: { ...fixtureSnapshot.configuration, trackerKind: 'local', projectRef: 'personal', credentials: [] },
+    } as const
+    const markup = renderToStaticMarkup(
+      <DashboardSurface
+        snapshot={localSnapshot}
+        onRefresh={async () => {}}
+        onPause={async () => {}}
+        onStop={async () => {}}
+        onCreateTask={async () => {}}
+        onUpdateTask={async () => {}}
+        onDeleteTask={async () => {}}
+        onOpenSession={() => {}}
+      />,
+    )
+
+    expect(markup).toContain('Local')
+    expect(markup).toContain('Personal')
+    expect(markup).toContain('aria-label="Add task to Backlog"')
   })
 })

@@ -4,7 +4,7 @@ import { compareCandidates, failureRetryDelay, stateLimit } from '../src/orchest
 
 function task(identifier: string, priority?: number, createdAt?: string): TaskIssue {
   return {
-    sourceKind: 'fixture', nativeRef: identifier, identifier, title: identifier,
+    sourceKind: 'fixture', scopeRef: 'fixture-project', nativeRef: identifier, identifier, title: identifier,
     ...(priority === undefined ? {} : { priority }),
     ...(createdAt === undefined ? {} : { createdAt }),
     state: { name: 'Todo' }, labels: [], blockedBy: [], dispatchable: true,

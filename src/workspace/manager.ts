@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TaskIssue } from '../domain/issue.ts'
 import type { WorkflowDefinition } from '../workflow/types.ts'
-import { assertContained, resolveWorkspaceRoot, workspaceLeaf } from './path-safety.ts'
+import { assertContained, issueWorkspaceLeaf, resolveWorkspaceRoot } from './path-safety.ts'
 
 export interface PreparedWorkspace {
   readonly path: string
@@ -33,7 +33,7 @@ export class WorkspaceManager {
       throw new Error(`workspace root is not a real directory: ${root}`)
     }
     const canonicalRoot = await realpath(root)
-    const path = resolve(canonicalRoot, workspaceLeaf(issue.identifier))
+    const path = resolve(canonicalRoot, issueWorkspaceLeaf(issue))
     assertContained(canonicalRoot, path)
 
     let createdNow = false
@@ -129,7 +129,7 @@ export class WorkspaceManager {
       throw new Error(`workspace root is not a real directory: ${configuredRoot}`)
     }
     const canonicalRoot = await realpath(configuredRoot)
-    const candidate = resolve(canonicalRoot, workspaceLeaf(issue.identifier))
+    const candidate = resolve(canonicalRoot, issueWorkspaceLeaf(issue))
     assertContained(canonicalRoot, candidate)
     let info
     try {

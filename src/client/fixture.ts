@@ -14,6 +14,7 @@ function issue(
 ): TaskIssue {
   return {
     sourceKind: 'linear',
+    scopeRef: 'ENG',
     nativeRef,
     identifier: id,
     title,
@@ -56,7 +57,7 @@ const totals = (input: number, output: number, cacheRead: number, cacheWrite: nu
 
 const running: readonly IssueRuntimeView[] = [
   {
-    key: 'linear:issue-238', identifier: 'ENG-238', phase: 'running', state: 'In Progress',
+    key: 'linear:ENG:issue-238', identifier: 'ENG-238', phase: 'running', state: 'In Progress',
     sessionId: 'dsh-dashboard-a9e7f13c', turnCount: 4, startedAt: '2026-08-14T02:11:00.000Z',
     updatedAt: clock, workerHost: 'DESKTOP-ENG-01', workspacePath: 'F:\\Workspaces\\dsh-dashboard\\ENG-238',
     lastEvent: 'tool/result', lastEventAt: '2026-08-14T02:29:31.000Z',
@@ -70,7 +71,7 @@ const running: readonly IssueRuntimeView[] = [
     ],
   },
   {
-    key: 'linear:issue-233', identifier: 'ENG-233', phase: 'running', state: 'In Progress',
+    key: 'linear:ENG:issue-233', identifier: 'ENG-233', phase: 'running', state: 'In Progress',
     sessionId: 'dsh-dashboard-f03f933a', turnCount: 2, startedAt: '2026-08-14T02:20:00.000Z',
     updatedAt: clock, workerHost: 'DESKTOP-ENG-01', workspacePath: 'F:\\Workspaces\\dsh-dashboard\\ENG-233',
     lastEvent: 'assistant/message', lastEventAt: '2026-08-14T02:29:05.000Z',
@@ -78,7 +79,7 @@ const running: readonly IssueRuntimeView[] = [
     tokens: totals(74_600, 13_800, 206_400, 8_200, 4_100), recentEvents: [],
   },
   {
-    key: 'linear:issue-231', identifier: 'ENG-231', phase: 'running', state: 'In Progress',
+    key: 'linear:ENG:issue-231', identifier: 'ENG-231', phase: 'running', state: 'In Progress',
     sessionId: 'dsh-dashboard-7bf2a908', turnCount: 3, startedAt: '2026-08-14T02:17:00.000Z',
     updatedAt: clock, workerHost: 'DESKTOP-ENG-01', workspacePath: 'F:\\Workspaces\\dsh-dashboard\\ENG-231',
     lastEvent: 'tool/call', lastEventAt: '2026-08-14T02:28:14.000Z',
@@ -86,13 +87,13 @@ const running: readonly IssueRuntimeView[] = [
     tokens: totals(91_300, 17_400, 250_300, 10_700, 5_900), recentEvents: [],
   },
   {
-    key: 'linear:issue-236', identifier: 'ENG-236', phase: 'retrying', state: 'Todo', turnCount: 1,
+    key: 'linear:ENG:issue-236', identifier: 'ENG-236', phase: 'retrying', state: 'Todo', turnCount: 1,
     startedAt: '2026-08-14T02:25:00.000Z', updatedAt: clock, workerHost: 'DESKTOP-ENG-01',
     workspacePath: 'F:\\Workspaces\\dsh-dashboard\\ENG-236', tokens: totals(24_200, 6_300, 53_800, 2_900, 1_800),
     retry: { attempt: 2, dueAt: '2026-08-14T02:30:28.000Z', error: 'Linear rate limit; retry scheduled' }, recentEvents: [],
   },
   {
-    key: 'linear:issue-241', identifier: 'ENG-241', phase: 'blocked', state: 'Backlog', turnCount: 0,
+    key: 'linear:ENG:issue-241', identifier: 'ENG-241', phase: 'blocked', state: 'Backlog', turnCount: 0,
     updatedAt: clock, workerHost: 'DESKTOP-ENG-01', tokens: totals(0, 0, 0, 0, 0),
     blocked: { reason: 'Blocked by ENG-212 (In Progress)' }, recentEvents: [],
   },
@@ -102,6 +103,7 @@ export const fixtureSnapshot: DashboardSnapshot = {
   version: 1,
   generatedAt: clock,
   context: { kind: 'linear', providerLabel: 'Linear', projectLabel: 'ENG', projectRef: 'engineering' },
+  taskMutations: { canCreate: false, canUpdate: false, canDelete: false, states: [] },
   paused: false,
   board: {
     columns: [
@@ -134,5 +136,6 @@ export const fixtureSnapshot: DashboardSnapshot = {
     maxConcurrentAgents: 6, maxTurns: 20, pollingIntervalMs: 5000,
     permissionPreset: 'workspace-write', agentPreset: 'default', credentialRef: 'linear/default',
     credentialConfigured: true, credentialSource: 'credential-store', credentialWritable: false,
+    credentials: [{ ref: 'linear/default', label: 'API key', configured: true, source: 'credential-store', writable: false }],
   },
 }

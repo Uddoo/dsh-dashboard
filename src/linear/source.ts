@@ -4,7 +4,7 @@ import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { IssueBlocker, IssueState, TaskIssue, TaskSourceContext } from '../domain/issue.ts'
 import { normalizedState } from '../domain/issue.ts'
-import type { TaskSource } from '../task-source/index.ts'
+import type { TaskSource, TaskSourceAgentTool, TaskSourceCredentialStatus } from '../task-source/index.ts'
 
 const PAGE_SIZE = 50
 const RELATION_PAGE_SIZE = 50
@@ -154,6 +154,20 @@ export class LinearTaskSource implements TaskSource {
     return await this.graphql(query, variables, signal)
   }
 
+  agentTool(): TaskSourceAgentTool {
+    return {
+      kind: 'graphql',
+      name: 'linear_graphql',
+      description: 'Execute a GraphQL query or mutation against the configured Linear workspace. Credentials and endpoint are supplied by dsh-dashboard; never include a token.',
+      execute: async (query, variables, signal) => await this.executeRaw(query, variables, signal),
+    }
+  }
+
+  async credentialStatuses(): Promise<readonly TaskSourceCredentialStatus[]> {
+    const status = await this.credentialStatus()
+    return [{ ref: this.config.apiKeyRef, label: 'API key', ...status }]
+  }
+
   /** Safe credential status for the Configuration tab. */
   async credentialStatus(): Promise<{ configured: boolean; source?: string; writable: boolean }> {
     return await this.credentials.describe(credentialRef(this.config.apiKeyRef))
@@ -279,6 +293,7 @@ function normalizeIssue(value: unknown, routing: LinearRoutingConfig): TaskIssue
   const updatedAt = asIsoDate(raw.updatedAt)
   return {
     sourceKind: 'linear',
+    scopeRef: routing.projectSlug,
     nativeRef: id,
     identifier,
     title,

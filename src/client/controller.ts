@@ -2,6 +2,7 @@
 
 import type { ClientConnectionRpc, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { DashboardSnapshot } from '../runtime/types.ts'
+import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 
 export interface DashboardDataState {
   readonly snapshot?: DashboardSnapshot | undefined
@@ -16,6 +17,9 @@ export interface DashboardDataPort {
   refresh(): Promise<void>
   setPaused(paused: boolean): Promise<void>
   stopIssue(key: string): Promise<void>
+  createTask(input: CreateTaskInput): Promise<void>
+  updateTask(nativeRef: string, changes: UpdateTaskInput): Promise<void>
+  deleteTask(nativeRef: string): Promise<void>
 }
 
 /** Root overlay visibility shared by the sidebar trigger and shell-overlay entry. */
@@ -78,11 +82,23 @@ export class DashboardDataController implements DashboardDataPort {
     await this.call('stop', { key })
   }
 
+  async createTask(input: CreateTaskInput): Promise<void> {
+    await this.call('createTask', input, true, true)
+  }
+
+  async updateTask(nativeRef: string, changes: UpdateTaskInput): Promise<void> {
+    await this.call('updateTask', { nativeRef, changes }, true, true)
+  }
+
+  async deleteTask(nativeRef: string): Promise<void> {
+    await this.call('deleteTask', { nativeRef }, true, true)
+  }
+
   private async readState(): Promise<void> {
     await this.call('state', {}, false)
   }
 
-  private async call(endpoint: string, payload: unknown, announceLoading = true): Promise<void> {
+  private async call(endpoint: string, payload: unknown, announceLoading = true, propagateError = false): Promise<void> {
     this.activeRequests += 1
     if (announceLoading) {
       const { error: _previousError, ...current } = this.state
@@ -99,6 +115,7 @@ export class DashboardDataController implements DashboardDataPort {
         loading: false,
         error: error instanceof Error ? error.message : String(error),
       })
+      if (propagateError) throw error
     } finally {
       this.activeRequests -= 1
       if (this.activeRequests === 0 && this.state.loading) this.publish({ ...this.state, loading: false })

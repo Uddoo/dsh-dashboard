@@ -31,6 +31,9 @@ export const CloseIcon = (props: IconProps) => <Icon {...props}><path d="m6 6 12
 export const ExternalIcon = (props: IconProps) => <Icon {...props}><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 13v6H5V6h6" /></Icon>
 export const CopyIcon = (props: IconProps) => <Icon {...props}><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V5H5v11h3" /></Icon>
 export const StopIcon = (props: IconProps) => <Icon {...props}><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" stroke="none" /></Icon>
+export const PlusIcon = (props: IconProps) => <Icon {...props}><path d="M12 5v14M5 12h14" /></Icon>
+export const EditIcon = (props: IconProps) => <Icon {...props}><path d="m4 16-.8 4 4-.8L18.5 7.9a2.1 2.1 0 0 0-3-3Z" /><path d="m14 6 4 4M3.2 20H9" /></Icon>
+export const TrashIcon = (props: IconProps) => <Icon {...props}><path d="M4 7h16M9 7V4h6v3M6.5 7l.8 13h9.4l.8-13M10 11v5M14 11v5" /></Icon>
 
 /** Compact blue whale-like product mark; clicking it returns to Harness. */
 export function DeepSeekMark() {

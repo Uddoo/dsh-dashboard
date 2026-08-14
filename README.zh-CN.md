@@ -1,67 +1,73 @@
 # dsh-dashboard
 
-[English](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/README.md) | 简体中文
+[English](./README.md) | 简体中文
 
-`dsh-dashboard` 是一个面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Symphony 兼容任务编排器与运行看板。它将 Linear 任务转换为相互隔离的 Harness Agent 运行，同时保留 Harness 原生的外壳、侧栏、会话、工具、模型选择和权限系统。
+`dsh-dashboard` 是一个面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Symphony 兼容任务编排器与运行看板。它可以把 Linear、GitHub、Jira、Asana、GitLab 或 Host 本地任务转换为相互隔离的 Harness Agent 运行，同时保留 Harness 原生外壳、侧栏、会话、工具、模型选择和权限系统。
 
-![运行在 DeepSeek Harness 原生外壳中的 Linear 看板](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-board.jpg)
+![运行在 DeepSeek Harness 原生外壳中的任务看板](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-board.jpg)
 
 ## 主要能力
 
 - 读取包含 YAML frontmatter 和 Liquid prompt 的 `WORKFLOW.md`；无效热更新会被拒绝，最后一个有效定义继续生效。
-- 轮询 Linear、解析任务阻塞关系、执行全局及按状态并发限制，并以确定性顺序派发符合条件的任务。
+- 支持 Linear、GitHub Issues、Jira Cloud、Asana 项目、GitLab 项目 Issue，以及不需要凭据的本地任务。
+- 执行确定性的优先级排序、必需标签、全局并发限制和按状态并发限制。
 - 为每个任务创建持久工作区，并执行可配置的 `after_create`、`before_run`、`after_run` 和 `before_remove` 生命周期 Hook。
 - 通过 Harness 原生 Agent 执行任务，并在配置的 turn 上限内续跑同一个 Harness session。
-- 对失败运行执行有上限的指数退避，并在每次派发前重新核对任务状态。
-- 在 Harness 原生侧栏中增加 **Dashboard** 入口；Board、Runtime 和 Configuration 视图展示任务状态、session、workspace、turn、token、最近 Agent 事件、重试与阻塞原因。
-- Linear 凭据始终留在受信任的 Host 侧，不会经由 Dashboard RPC 发送，也不会渲染到浏览器中。
+- 对失败运行执行有上限的指数退避，并在每次派发前重新核对任务源状态。
+- 在 Harness 原生侧栏中增加 **Dashboard** 入口；Board、Runtime 和 Configuration 视图展示任务状态、session、workspace、turn、token、Agent 事件、重试、阻塞原因和凭据健康状态。
+- 当任务源为 **Local** 时，在各看板列显示 Linear 风格的 `+` 控件；用户可以创建、编辑、切换状态、设置优先级与描述，并删除由 Host 原子 JSON 文件保存的本地任务。
+- 所有外部凭据始终留在受信任 Host 侧；凭据值不会进入 Dashboard RPC payload 或浏览器状态。
 
-Dashboard 标题旁的 `Linear · ENG` 是动态任务源上下文，provider 名称和项目短标签均来自当前配置。
+Dashboard 标题旁的 `Provider · Project` 控件是动态上下文，例如 `Linear · ENG`、`GitHub · openai/example` 和 `Local · Personal`。
 
-## 真实集成截图
+## Provider 支持
 
-这些截图来自加载 npm 已发布插件的真实 DeepSeek Harness Web profile，并连接到一次性 Linear 测试项目。Runtime 画面记录了原生 Harness Agent 刚完成派发时的活动 worker；Configuration 画面展示当前工作流边界，但不会暴露凭据值。
+| Provider | 任务范围 | Dashboard 状态来源 | Host 凭据 | Agent 工具 |
+| --- | --- | --- | --- | --- |
+| Linear | 一个项目中的 Issue | Linear 原生工作流状态 | API Key | `linear_graphql` |
+| GitHub | 一个仓库的 Issue；会排除 Pull Request | 配置的状态标签；缺失时按 open/closed 回退 | Fine-grained 或 classic token | `github_api` |
+| Jira Cloud | 通过增强型 JQL 搜索选择的项目 Issue | Jira 原生 status | 账号邮箱 + API token | `jira_api` |
+| Asana | 一个项目中的 Task | 项目 Section；已完成任务使用终态 | Personal access token | `asana_api` |
+| GitLab | 一个项目中的 Issue | 配置的状态标签；缺失时按 opened/closed 回退 | Personal/project access token | `gitlab_api` |
+| Local | 一个具名本地项目中的任务 | `WORKFLOW.md` 声明的状态 | 无 | `local_task` |
 
-| Harness 原生 Agent Runtime | 当前工作流配置 |
-| --- | --- |
-| ![由 Harness 原生 Agent 执行的 Linear 任务](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-runtime.jpg) | ![Dashboard 的工作流、Tracker 与 Harness Agent 配置](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-configuration.jpg) |
+每份 `WORKFLOW.md` 只激活一个任务源。修改 `tracker.kind` 后，只有新的工作流通过完整校验并热更新成功，看板上下文和调度来源才会切换。
 
 ## 工作原理
 
 ```mermaid
 flowchart LR
-    L["Linear 项目"] --> S["Linear TaskSource"]
+    P["Linear / GitHub / Jira / Asana / GitLab"] --> S["TaskSource 适配器"]
+    L["Host 本地任务文件"] --> S
     W["WORKFLOW.md"] --> O["Orchestrator"]
     S --> O
     O --> M["任务独立工作区"]
     O --> A["Harness Agent session"]
-    A --> R["运行事件与 token"]
+    A --> R["事件与 token 用量"]
     M --> H["生命周期 Hook"]
-    O --> D["受信任 Host Dashboard RPC"]
+    O --> D["受信任 Host RPC"]
     R --> D
     D --> U["Harness 原生 Dashboard"]
 ```
 
-Host 插件负责 tracker 访问、调度、workspace、Hook、Agent session 和运行状态。浏览器客户端只接收经过约束的状态投影，并只提供 Pause/Resume、Stop、Refresh 等有限操作。
+Host 插件负责 Provider 访问、调度、workspace、Hook、Agent session、本地持久化与运行状态。浏览器只接收受约束的状态投影，并只提供 Pause/Resume、Stop、Refresh 和 Local 任务维护操作。
 
 ## 环境要求
 
 - Node.js `22.19+` 或 `24+`
-- pnpm `11.19+`
+- 从源码构建时使用 pnpm `11.19+`
 - DeepSeek Harness Web profile `0.1.0-rc.5` 或 `0.1.0-rc.6`
-- Linear Personal API Key
 - 一个已经存在的 Harness permission preset；随包配置使用 `workspace-write`
+- 选定远程 Provider 的凭据；Local 任务不需要凭据
 
-本仓库使用 npm 发布的 Harness `0.1.0-rc.6` 包进行编译和测试。已审核的 Harness 接口与版本边界见[兼容性说明](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/compatibility.md)。
+本仓库使用 npm 发布的 Harness `0.1.0-rc.6` 包进行编译和测试。已审核的接口边界见[兼容性说明](./docs/compatibility.md)。
 
 ## 安装
 
 ### 从 npm 安装
 
-将预构建插件包安装到 Harness Web profile：
-
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.1.0
+dsh plugin --profile web add dsh-dashboard@0.2.0
 dsh web --dump-config
 dsh web
 ```
@@ -69,16 +75,14 @@ dsh web
 如果没有全局安装 CLI：
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.1.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.2.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
 
-npm 包已经包含预构建的 Host 和 Client 入口，不需要授予安装时构建权限。
+npm 包已经包含预构建的 Host 与浏览器入口，不需要授予安装时构建权限。
 
-### 从源码构建或创建 tarball
-
-在仓库根目录使用 PowerShell 执行：
+### 从源码或 tarball 安装
 
 ```powershell
 pnpm install --ignore-scripts
@@ -87,40 +91,9 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-```
-
-将生成的插件包安装到 Harness Web profile：
-
-```powershell
-dsh plugin --profile web add ./dsh-dashboard-0.1.0.tgz
-dsh web --dump-config
+dsh plugin --profile web add ./dsh-dashboard-0.2.0.tgz
 dsh web
 ```
-
-如果没有全局安装 CLI，可以直接使用 npm 包：
-
-```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add ./dsh-dashboard-0.1.0.tgz
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
-```
-
-### 从 GitHub 安装
-
-安装时应锁定 release tag，避免仓库后续更新静默改变安装过程中执行的代码：
-
-```powershell
-dsh plugin --profile web add github:Uddoo/dsh-dashboard#v0.1.0
-```
-
-Git 安装获取的是源码，因此 pnpm 必须运行本包的 `prepare` 脚本来构建 `lib/`。pnpm 10 及以上版本在执行依赖构建脚本前要求显式授权。如果首次安装报告构建被阻止，请把 pnpm 输出的**完整 package key 原样复制**到 Web profile 的 `$DSH_HOME/profiles/web/pnpm-workspace.yaml`，然后重新执行安装命令。GitHub tag 会解析为带 commit 的 codeload URL，因此只填写包名是不够的：
-
-```yaml
-allowBuilds:
-  dsh-dashboard@https://codeload.github.com/Uddoo/dsh-dashboard/tar.gz/<resolved-commit-sha>: true
-```
-
-授予 `allowBuilds` 意味着允许插件包代码在安装期间于本机执行。启用前应审核锁定版本的源码。如果不希望安装时执行构建，可以使用 npm 包，或下载预构建的 [v0.1.0 release tarball](https://github.com/Uddoo/dsh-dashboard/releases/download/v0.1.0/dsh-dashboard-0.1.0.tgz)。
 
 打开 `dsh web` 输出的地址，然后从 Harness 原生侧栏选择 **Dashboard**。
 
@@ -132,18 +105,22 @@ dsh plugin --profile web remove dsh-dashboard
 
 ## 插件配置
 
-插件包提供标准 `dsh.bundle.patch`，默认值位于 [cordis.patch.yml](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/cordis.patch.yml)：
+插件包提供标准 `dsh.bundle.patch`，默认值位于 [cordis.patch.yml](./cordis.patch.yml)。
 
 | 配置项 | 用途 |
 | --- | --- |
-| `workflowPath` | `WORKFLOW.md` 的路径；相对路径从 Harness 进程工作目录解析，也可以使用绝对路径。 |
-| `permissionPreset` | 应用于每个编排 Agent 的 Harness permission preset；该配置为必填项。 |
-| `agentPreset` | 可选的 Harness Agent preset；省略时使用可用的 roster 默认值。 |
+| `workflowPath` | `WORKFLOW.md` 路径；相对路径从 Harness 进程工作目录解析，也可以使用绝对路径。 |
+| `permissionPreset` | 应用于每个编排 Agent 的显式 Harness permission preset；必填。 |
+| `agentPreset` | 可选 Harness Agent preset；省略时使用可用的 roster 默认值。 |
 | `workerHost` | Runtime 观测信息中显示的 Host 标签，默认为 `local`。 |
-| `linear.apiKeyRef` | 由 Host 解析的凭据引用，默认为 `LINEAR_API_KEY`。 |
-| `linear.endpoint` | Linear GraphQL 地址，默认为 `https://api.linear.app/graphql`。 |
+| `linear.endpoint` / `linear.apiKeyRef` | Linear GraphQL 地址与 API Key 凭据引用。 |
+| `github.endpoint` / `github.tokenRef` | GitHub REST 地址与 token 引用；可改为 GitHub Enterprise 地址。 |
+| `jira.emailRef` / `jira.apiTokenRef` | Jira Cloud 账号邮箱与 API token 引用；站点地址写在 `WORKFLOW.md`。 |
+| `asana.endpoint` / `asana.tokenRef` | Asana REST 基础地址与 token 引用。 |
+| `gitlab.endpoint` / `gitlab.tokenRef` | GitLab API v4 地址与 token 引用；自建 GitLab 需要覆盖 endpoint。 |
+| `local.storePath` | Host 本地 JSON 任务文件，默认为 `~/.dsh-dashboard/tasks.json`。 |
 
-本机路径或 preset 不同时，可以在 Web profile 的 `cordis.patch.yml` 中覆盖已安装配置行：
+Web profile 覆盖示例：
 
 ```yaml
 - id: dsh-dashboard
@@ -151,74 +128,121 @@ dsh plugin --profile web remove dsh-dashboard
     workflowPath: C:\work\my-project\WORKFLOW.md
     permissionPreset: workspace-write
     workerHost: workstation-01
-    linear:
-      apiKeyRef: LINEAR_API_KEY
-      endpoint: https://api.linear.app/graphql
+    github:
+      tokenRef: GITHUB_TOKEN
+      endpoint: https://api.github.com
+    jira:
+      emailRef: JIRA_EMAIL
+      apiTokenRef: JIRA_API_TOKEN
+    gitlab:
+      tokenRef: GITLAB_TOKEN
+      endpoint: https://gitlab.example.com/api/v4
+    local:
+      storePath: C:\work\dsh-dashboard\tasks.json
 ```
 
-`permissionPreset` 被设计为显式必填项：无人值守的编排不能静默选择或提升 sandbox/approval policy。
+`permissionPreset` 被设计为显式必填项：无人值守编排不能静默选择或提升 sandbox/approval policy。
 
-## Linear 凭据
+## 凭据
 
-启动 Harness 前设置被引用的环境变量：
+只需设置当前 Provider 使用的引用：
 
 ```powershell
 $env:LINEAR_API_KEY = 'lin_api_replace_me'
+$env:GITHUB_TOKEN = 'github_pat_replace_me'
+$env:JIRA_EMAIL = 'user@example.com'
+$env:JIRA_API_TOKEN = 'replace_me'
+$env:ASANA_ACCESS_TOKEN = 'replace_me'
+$env:GITLAB_TOKEN = 'glpat-replace_me'
 dsh web
 ```
 
-也可以将凭据写入 `$DSH_HOME/.credentials.yaml`：
+也可以把同名引用写入 `$DSH_HOME/.credentials.yaml`：
 
 ```yaml
 LINEAR_API_KEY: lin_api_replace_me
+GITHUB_TOKEN: github_pat_replace_me
+JIRA_EMAIL: user@example.com
+JIRA_API_TOKEN: replace_me
+ASANA_ACCESS_TOKEN: replace_me
+GITLAB_TOKEN: glpat_replace_me
 ```
 
-不要把该文件、真实 token 或包含 token 的命令输出提交到 Git。插件会在每次 Linear 操作开始时解析凭据，不会把 secret 写入插件配置、日志、RPC payload 或 Dashboard 状态。
+不要提交该文件、真实 token 或包含凭据的日志。每个 Provider 都会在操作时解析凭据；Configuration 视图只显示引用名称、是否已配置以及凭据来源。
 
 ## WORKFLOW.md
 
-可以从 [WORKFLOW.example.md](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/WORKFLOW.example.md) 开始。YAML frontmatter 控制 tracker、轮询、workspace、生命周期 Hook、Agent 限制和可见看板状态；Markdown 正文会针对每个任务渲染为 Agent prompt。
+可以从面向 Linear 的 [WORKFLOW.example.md](./WORKFLOW.example.md) 或对应 Provider 的完整示例开始：
 
-重要字段：
+- [GitHub](./examples/WORKFLOW.github.md)
+- [Jira](./examples/WORKFLOW.jira.md)
+- [Asana](./examples/WORKFLOW.asana.md)
+- [GitLab](./examples/WORKFLOW.gitlab.md)
+- [Local 任务](./examples/WORKFLOW.local.md)
+
+通用字段：
 
 | 字段 | 说明 |
 | --- | --- |
-| `tracker.provider.project_slug` | Linear 项目的 slug，而不是显示名称。 |
-| `tracker.provider.context_label` | Dashboard 标题旁显示的项目短标签，例如 `ENG`。 |
+| `tracker.kind` | `linear`、`github`、`jira`、`asana`、`gitlab` 或 `local`。 |
+| `tracker.provider.context_label` | Dashboard 标题旁显示的可选项目短标签。 |
 | `tracker.required_labels` | 任务派发前必须全部存在的标签。 |
 | `tracker.active_states` | 可以运行 Agent 的任务状态。 |
 | `tracker.terminal_states` | 停止运行并触发安全 workspace 清理的状态。 |
 | `workspace.root` | 存放各任务持久工作区的父目录。 |
-| `hooks.timeout_ms` | 每个生命周期 Hook 的超时时间。 |
-| `agent.max_concurrent_agents` | 全局 Agent 并发上限。 |
-| `agent.max_concurrent_agents_by_state` | 各 tracker 状态可选的独立并发上限。 |
+| `hooks.timeout_ms` | 每个生命周期 Hook 独立使用的超时时间。 |
+| `agent.max_concurrent_agents` | Agent 全局并发上限。 |
+| `agent.max_concurrent_agents_by_state` | 各任务源状态可选的独立并发上限。 |
 | `agent.max_turns` | 同一个 Harness session 中允许续跑的最大 turn 数。 |
 | `agent.max_retry_backoff_ms` | 重试退避时间上限。 |
 | `dashboard.visible_states` | 在 Hidden columns 分组之前显示的看板列。 |
 
-Liquid prompt 可以使用 `issue.identifier`、`issue.title`、`issue.description`、`issue.state`、`issue.labels`、`issue.url` 等任务字段，以及当前重试次数 `attempt`。
+Provider 路由字段：
+
+| Provider | 必填字段 | 可选路由 |
+| --- | --- | --- |
+| Linear | `project_slug` | `assignee: me` 或 Linear assignee id |
+| GitHub | `owner`、`repo` | `assignee`、`state_labels` |
+| Jira | `site_url`、`project_key` | `assignee: me` 或 account id、附加 `jql` |
+| Asana | `project_gid` | `assignee: me` 或 user gid |
+| GitLab | 数字 id 或 namespace path 形式的 `project_id` | `assignee`、`state_labels` |
+| Local | `project_id` 默认为 `local` | `context_label` |
+
+GitHub 与 GitLab 的 `state_labels` 是“工作流状态名 → Provider 标签”的映射。名称与某个已声明状态完全相同的标签也会自动识别。没有匹配标签的打开 Issue 会回退到第一个 active state；没有匹配终态标签的关闭 Issue 会回退到第一个 terminal state。
+
+Jira 直接使用原生 status 名称。Asana 使用任务在当前项目中的 Section；已完成的 Asana 任务使用第一个终态。
+
+Liquid prompt 可以引用 `issue.identifier`、`issue.title`、`issue.description`、`issue.state`、`issue.labels`、`issue.url` 和当前重试次数 `attempt`。
+
+### Local 任务控件
+
+当 `tracker.kind` 为 `local` 时，每个可见列标题都会显示 `+`。新任务会直接创建到所选列。打开任务卡片后可以编辑或删除，并可修改标题、描述、状态和优先级。
+
+Local 任务由 Host 持久化，不使用浏览器 `localStorage`。所有写入都会串行执行，通过同目录临时文件和原子 rename 提交。Dashboard 编辑会携带打开任务时的版本；如果 Agent 或其他编辑器已更新该任务，Host 会拒绝覆盖。格式损坏或版本不兼容的任务文件会被拒绝，而不会被静默覆盖。Dashboard 删除只移除任务记录；已经存在的 Agent workspace 会被保留。
 
 ### 生命周期 Hook
 
 - `after_create` 只在新任务工作区创建后执行。
 - `before_run` 在每次 Agent 尝试前执行。
 - `after_run` 在 Agent 尝试结束后、工作区仍然存在时执行。
-- `before_remove` 在终态工作区清理前执行。
+- `before_remove` 在终态 workspace 清理前执行。
 
 Hook 会在任务工作区内作为受信任的本地命令运行，应当像审核构建或部署脚本一样审核这些命令。
 
 ## 调度与工作区安全
 
 - 符合条件的任务按优先级、创建时间和标识符排序。
-- 未解决的 Linear `blocks` 关系会阻止任务派发，并在 Dashboard 状态中显示为 blocker。
-- 查询结果中缺失的任务会停止运行，但不会被视为终态，避免暂时的 tracker 或查询变化删除工作区。
+- 可用时，Linear `blocks` 关系和 Jira “is blocked by” 链接会投影为 blocker。
+- 查询结果中缺失的任务会停止运行，但不会被视为终态，避免暂时的查询或 Provider 变化删除 workspace。
 - 文件系统变更前会规范化任务标识符并检查路径包含关系。
 - Workspace root 和任务目录必须是真实目录，不能是符号链接。
-- `before_remove` 结束后会再次解析删除目标；如果 Hook 执行期间 root 或目标发生变化，清理操作会被拒绝。
-- `after_create` 失败时会删除不完整的新工作区，使后续尝试能够重新初始化。
-- Hook stdout 和 stderr 只保留有上限的尾部内容，避免输出导致无上限内存增长。
+- `before_remove` 结束后会再次解析删除目标；如果 Hook 运行期间 root 或目标发生变化，清理会被拒绝。
+- `after_create` 失败会删除不完整的 workspace，使后续尝试能够重新初始化。
+- 运行 claim 与 workspace 名称包含 Provider 项目作用域，因此不同仓库或项目中的相同任务编号不会互相复用。
+- Hook stdout 和 stderr 只保留有上限的尾部内容。
+- 远程 Agent 工具把 endpoint 与凭据留在 Host，并在 Provider API 允许的范围内把操作限制到当前仓库、项目或 Issue 命名空间。
 
-完整信任模型和组件边界见[安全说明](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/security.md)与[架构说明](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/architecture.md)。
+完整信任模型和组件边界见[安全说明](./docs/security.md)与[架构说明](./docs/architecture.md)。
 
 ## Dashboard
 
@@ -229,11 +253,17 @@ Hook 会在任务工作区内作为受信任的本地命令运行，应当像审
 
 插件不会替换或复制 Harness 侧栏。
 
-可用视图：
-
-- **Board**：Linear 风格任务列、隐藏状态、筛选、显示控制和任务详情。
+- **Board**：任务源原生列、隐藏状态、筛选、Local 任务维护与任务详情。
 - **Runtime**：运行中、重试中和被阻塞的记录，以及 turn、token、worker host 和更新时间。
-- **Configuration**：当前最后有效的 workflow、tracker 上下文、凭据状态、workspace root、轮询间隔、permission preset 和 Agent 限制。
+- **Configuration**：最后有效 workflow、Provider 上下文、每个凭据引用的健康状态、workspace root、轮询间隔、permission preset 和 Agent 限制。
+
+通过 Harness 原生 Dashboard 入口加载的 Local 任务看板：
+
+![在 DeepSeek Harness 中加载的 Local 任务看板](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-tasks.jpg)
+
+无需外部 Tracker，直接创建和编辑 Local 任务：
+
+![DeepSeek Harness 中的 Local 任务编辑器](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-task-editor.jpg)
 
 ## 开发与验证
 
@@ -249,24 +279,31 @@ pnpm run build
 pnpm run dev:dashboard
 ```
 
-打开 `http://127.0.0.1:4173/dev/`。该页面使用本地 fixture，适合进行组件级视觉和交互检查；它不会连接 Linear，也不能证明打包后的插件已经在 Harness 中正确加载。
+`http://127.0.0.1:4173/dev/` 使用本地 fixture，适合组件级视觉与交互检查，但不能证明打包插件已经在 Harness 中正确加载。
 
-集成验证应当安装生成的插件包、启动 `dsh web`、从 Harness 原生侧栏进入 Dashboard，并检查页面渲染、交互、浏览器控制台和 Host 日志。
+集成验证必须构建或打包插件，把该构件安装到 Harness Web profile，在专用工作区启动 `dsh web`，从原生侧栏进入 Dashboard，并检查 Provider 数据、Local 任务维护、浏览器控制台和 Host 日志。
 
-设计参考保存在 [docs/design](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/design/README.md)。
+设计参考保存在 [docs/design](./docs/design/README.md)。
+
+## 上游 API 参考
+
+- [GitHub Issues REST API](https://docs.github.com/en/rest/issues/issues)
+- [Jira Cloud REST v3 增强型 Issue 搜索](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
+- [Asana 项目任务接口](https://developers.asana.com/reference/gettasksforproject)
+- [GitLab Issues API](https://docs.gitlab.com/api/issues/)
 
 ## 与 Symphony 的关系
 
 本项目复刻 Symphony 的编排契约，而不是嵌入其 Elixir/OTP 实现：
 
-- `TaskSource` 提供 tracker 边界。
-- `HarnessAgentRunner` 将 Agent 执行和续跑映射到 Harness 原生 session。
-- 持久任务工作区与生命周期 Hook 遵循 Symphony 兼容语义，并增加 fail-closed 文件系统检查。
-- 受信任 Host RPC 将可观察状态和少量运行控制投影到 Dashboard。
+- `TaskSource` 提供 Provider 边界。
+- `HarnessAgentRunner` 将执行和续跑映射到 Harness 原生 session。
+- 持久任务 workspace 与生命周期 Hook 遵循 Symphony 兼容语义，并增加 fail-closed 文件系统检查。
+- 受信任 Host RPC 将可观察状态和有边界的控制投影到浏览器。
 - UI 将 Symphony 的运行观测信号与 Linear 风格看板结合，并运行在 Harness 原生外壳中。
 
 上游参考：[openai/symphony](https://github.com/openai/symphony)。
 
 ## 许可证
 
-[MIT](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/LICENSE)
+[MIT](./LICENSE)

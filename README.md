@@ -1,84 +1,88 @@
 # dsh-dashboard
 
-English | [简体中文](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/README.zh-CN.md)
+English | [简体中文](./README.zh-CN.md)
 
-`dsh-dashboard` is a Symphony-compatible issue orchestrator and operations dashboard for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It turns Linear issues into isolated Harness Agent runs while preserving the native Harness shell, sidebar, sessions, tools, model selection, and permission system.
+`dsh-dashboard` is a Symphony-compatible task orchestrator and operational board for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It turns tasks from Linear, GitHub, Jira, Asana, GitLab, or a Host-local task store into isolated Harness Agent runs while preserving the native Harness shell, sidebar, sessions, tools, model selection, and permission system.
 
-![Linear board running inside the native DeepSeek Harness shell](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-board.jpg)
+![Task board running inside the native DeepSeek Harness shell](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-board.jpg)
 
-## Highlights
+## Features
 
-- Reads a `WORKFLOW.md` with YAML frontmatter and a Liquid prompt. Invalid hot reloads are rejected while the last valid definition remains active.
-- Polls Linear, resolves blocking relations, applies global and per-state concurrency limits, and dispatches eligible work in deterministic order.
-- Creates one persistent workspace per issue and runs configurable `after_create`, `before_run`, `after_run`, and `before_remove` lifecycle hooks.
-- Runs work through the native Harness Agent and continues the same Harness session for up to the configured turn limit.
-- Retries failed runs with bounded exponential backoff and reconciles task state before every dispatch cycle.
-- Adds a native **Dashboard** entry to the Harness sidebar. Board, Runtime, and Configuration views expose task state, sessions, workspaces, turns, token usage, recent Agent events, retries, and blockers.
-- Keeps Linear credentials on the trusted Host side; secrets are never sent through Dashboard RPC or rendered in the browser.
+- Loads a `WORKFLOW.md` with YAML frontmatter and a Liquid prompt. Invalid hot reloads are rejected while the last valid definition remains active.
+- Supports Linear, GitHub Issues, Jira Cloud, Asana projects, GitLab project issues, and credential-free local tasks.
+- Applies deterministic priority ordering, required labels, global concurrency, and per-state concurrency limits.
+- Creates one persistent workspace per task and runs configurable `after_create`, `before_run`, `after_run`, and `before_remove` lifecycle hooks.
+- Runs through native Harness Agents and continues the same Harness session up to the configured turn limit.
+- Retries failed runs with bounded exponential backoff and rechecks source state before every dispatch.
+- Adds a **Dashboard** entry to the native Harness sidebar. Board, Runtime, and Configuration expose task state, session, workspace, turns, tokens, Agent events, retries, blockers, and credential health.
+- Shows Linear-style `+` controls for the **Local** source, with create, edit, state, priority, description, and delete operations backed by an atomic Host-side JSON store.
+- Keeps external credentials on the trusted Host; credential values never enter Dashboard RPC payloads or browser state.
 
-The `Linear · ENG` control beside the Dashboard title is dynamic task-source context. Both the provider label and project label come from the active configuration.
+The `Provider · Project` control beside the Dashboard title is dynamic. Examples include `Linear · ENG`, `GitHub · openai/example`, and `Local · Personal`.
 
-## Live integration screenshots
+## Provider support
 
-These screenshots were captured from the npm-published plugin loaded by a real DeepSeek Harness Web profile and connected to a disposable Linear project. The Runtime view shows a native Harness Agent worker immediately after dispatch; the Configuration view shows the active workflow boundary without exposing credential values.
+| Provider | Task identity | Dashboard state source | Host credentials | Agent tool |
+| --- | --- | --- | --- | --- |
+| Linear | Project issues | Native Linear workflow state | API key | `linear_graphql` |
+| GitHub | Repository issues; pull requests are excluded | Configured state labels; open/closed fallback | Fine-grained or classic token | `github_api` |
+| Jira Cloud | Project issues selected with enhanced JQL | Native Jira status | Account email + API token | `jira_api` |
+| Asana | Tasks in one project | Project section; completed tasks use a terminal state | Personal access token | `asana_api` |
+| GitLab | Issues in one project | Configured state labels; opened/closed fallback | Personal/project access token | `gitlab_api` |
+| Local | Tasks in one named local project | States declared in `WORKFLOW.md` | None | `local_task` |
 
-| Native Harness Agent runtime | Active workflow configuration |
-| --- | --- |
-| ![A Linear issue running through a native Harness Agent](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-runtime.jpg) | ![Dashboard workflow, tracker, and Harness Agent configuration](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-configuration.jpg) |
+Only one task source is active for a `WORKFLOW.md`. Switching `tracker.kind` changes the board context and scheduler source after the validated workflow reload succeeds.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    L["Linear project"] --> S["Linear TaskSource"]
+    P["Linear / GitHub / Jira / Asana / GitLab"] --> S["TaskSource adapter"]
+    L["Host-local task store"] --> S
     W["WORKFLOW.md"] --> O["Orchestrator"]
     S --> O
-    O --> M["Per-issue workspace"]
+    O --> M["Per-task workspace"]
     O --> A["Harness Agent session"]
-    A --> R["Runtime events and tokens"]
+    A --> R["Events and token usage"]
     M --> H["Lifecycle hooks"]
-    O --> D["Trusted-host Dashboard RPC"]
+    O --> D["Trusted Host RPC"]
     R --> D
     D --> U["Native Harness Dashboard"]
 ```
 
-The Host plugin owns tracker access, scheduling, workspaces, hooks, Agent sessions, and runtime state. The browser client receives a constrained projection of that state and exposes only bounded operations such as Pause/Resume, Stop, and Refresh.
+The Host plugin owns provider access, scheduling, workspaces, hooks, Agent sessions, local persistence, and runtime state. The browser receives a constrained state projection and exposes only pause/resume, stop, refresh, and Local task mutations.
 
 ## Requirements
 
 - Node.js `22.19+` or `24+`
-- pnpm `11.19+`
+- pnpm `11.19+` for source builds
 - DeepSeek Harness Web profile `0.1.0-rc.5` or `0.1.0-rc.6`
-- A Linear Personal API Key
-- An existing Harness permission preset; the bundled configuration uses `workspace-write`
+- An existing Harness permission preset; the bundled row uses `workspace-write`
+- Credentials for the selected remote provider, or no credentials for Local tasks
 
-The repository is compiled and tested against the npm-published Harness `0.1.0-rc.6` packages. See [Compatibility](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/compatibility.md) for the audited Harness interfaces and version boundary.
+This repository compiles and tests against the published Harness `0.1.0-rc.6` packages. See [Compatibility](./docs/compatibility.md) for the reviewed interface boundary.
 
-## Install
+## Installation
 
-### Install from npm
-
-Install the prebuilt package into the Harness Web profile:
+### npm
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.1.0
+dsh plugin --profile web add dsh-dashboard@0.2.0
 dsh web --dump-config
 dsh web
 ```
 
-If the CLI is not installed globally:
+Without a global CLI:
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.1.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.2.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
 
-The npm package contains prebuilt Host and Client entry points and does not require an install-time build allowance.
+The npm package contains prebuilt Host and browser entries and does not require install-time build permission.
 
-### Build from source or create a tarball
-
-Run these commands from the repository root in PowerShell:
+### Source or tarball
 
 ```powershell
 pnpm install --ignore-scripts
@@ -87,44 +91,13 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-```
-
-Install the generated package into the Harness Web profile:
-
-```powershell
-dsh plugin --profile web add ./dsh-dashboard-0.1.0.tgz
-dsh web --dump-config
+dsh plugin --profile web add ./dsh-dashboard-0.2.0.tgz
 dsh web
 ```
 
-If the CLI is not installed globally, use the npm package directly:
+Open the address printed by `dsh web`, then select **Dashboard** in the native Harness sidebar.
 
-```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add ./dsh-dashboard-0.1.0.tgz
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
-```
-
-### Install from GitHub
-
-Pin the installation to a release tag so later repository changes cannot silently alter the code executed during installation:
-
-```powershell
-dsh plugin --profile web add github:Uddoo/dsh-dashboard#v0.1.0
-```
-
-Git installations fetch source code, so pnpm must run this package's `prepare` script to build `lib/`. pnpm 10 and newer require explicit permission before running dependency build scripts. If the first install reports a blocked build, copy the **exact package key printed by pnpm** into the Web profile's `$DSH_HOME/profiles/web/pnpm-workspace.yaml`, then repeat the command. GitHub tags resolve to commit-specific codeload URLs, so a package-name-only key is not sufficient:
-
-```yaml
-allowBuilds:
-  dsh-dashboard@https://codeload.github.com/Uddoo/dsh-dashboard/tar.gz/<resolved-commit-sha>: true
-```
-
-Granting `allowBuilds` permits package code to execute on the local machine during installation. Review the pinned source before enabling it. To avoid install-time builds, use the npm package or download the prebuilt [v0.1.0 release tarball](https://github.com/Uddoo/dsh-dashboard/releases/download/v0.1.0/dsh-dashboard-0.1.0.tgz).
-
-Open the URL printed by `dsh web`, then select **Dashboard** in the native Harness sidebar.
-
-To uninstall the plugin:
+To uninstall:
 
 ```powershell
 dsh plugin --profile web remove dsh-dashboard
@@ -132,18 +105,22 @@ dsh plugin --profile web remove dsh-dashboard
 
 ## Plugin configuration
 
-The package contributes a standard `dsh.bundle.patch`. Its defaults are defined in [cordis.patch.yml](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/cordis.patch.yml):
+The package provides a standard `dsh.bundle.patch`; defaults live in [cordis.patch.yml](./cordis.patch.yml).
 
-| Key | Purpose |
+| Setting | Purpose |
 | --- | --- |
-| `workflowPath` | Path to `WORKFLOW.md`, resolved from the Harness process working directory unless absolute. |
-| `permissionPreset` | Explicit Harness permission preset applied to every orchestrated Agent. This value is required. |
-| `agentPreset` | Optional Harness Agent preset. When omitted, the available roster default is used. |
+| `workflowPath` | `WORKFLOW.md` path, relative to the Harness process directory unless absolute. |
+| `permissionPreset` | Explicit Harness permission preset applied to every orchestrated Agent. Required. |
+| `agentPreset` | Optional Harness Agent preset; omission selects the available roster default. |
 | `workerHost` | Host label shown in runtime observability. Defaults to `local`. |
-| `linear.apiKeyRef` | Credential reference resolved by the Host. Defaults to `LINEAR_API_KEY`. |
-| `linear.endpoint` | Linear GraphQL endpoint. Defaults to `https://api.linear.app/graphql`. |
+| `linear.endpoint` / `linear.apiKeyRef` | Linear GraphQL endpoint and API-key reference. |
+| `github.endpoint` / `github.tokenRef` | GitHub REST endpoint and token reference; the endpoint can target GitHub Enterprise. |
+| `jira.emailRef` / `jira.apiTokenRef` | Jira Cloud account-email and API-token references. The site URL belongs in `WORKFLOW.md`. |
+| `asana.endpoint` / `asana.tokenRef` | Asana REST endpoint and token reference. |
+| `gitlab.endpoint` / `gitlab.tokenRef` | GitLab API v4 endpoint and token reference. Override the endpoint for self-managed GitLab. |
+| `local.storePath` | Host-side JSON task store. Defaults to `~/.dsh-dashboard/tasks.json`. |
 
-Override the installed row in the Web profile's `cordis.patch.yml` when local paths or presets differ:
+Example Web profile override:
 
 ```yaml
 - id: dsh-dashboard
@@ -151,89 +128,142 @@ Override the installed row in the Web profile's `cordis.patch.yml` when local pa
     workflowPath: C:\work\my-project\WORKFLOW.md
     permissionPreset: workspace-write
     workerHost: workstation-01
-    linear:
-      apiKeyRef: LINEAR_API_KEY
-      endpoint: https://api.linear.app/graphql
+    github:
+      tokenRef: GITHUB_TOKEN
+      endpoint: https://api.github.com
+    jira:
+      emailRef: JIRA_EMAIL
+      apiTokenRef: JIRA_API_TOKEN
+    gitlab:
+      tokenRef: GITLAB_TOKEN
+      endpoint: https://gitlab.example.com/api/v4
+    local:
+      storePath: C:\work\dsh-dashboard\tasks.json
 ```
 
-`permissionPreset` is deliberately explicit: unattended orchestration must not silently select or elevate a sandbox or approval policy.
+`permissionPreset` is deliberately explicit: unattended orchestration must never silently select or elevate a sandbox or approval policy.
 
-## Linear credentials
+## Credentials
 
-Set the referenced environment variable before starting Harness:
+Set only the references needed by the active provider:
 
 ```powershell
 $env:LINEAR_API_KEY = 'lin_api_replace_me'
+$env:GITHUB_TOKEN = 'github_pat_replace_me'
+$env:JIRA_EMAIL = 'user@example.com'
+$env:JIRA_API_TOKEN = 'replace_me'
+$env:ASANA_ACCESS_TOKEN = 'replace_me'
+$env:GITLAB_TOKEN = 'glpat-replace_me'
 dsh web
 ```
 
-Alternatively, place the credential in `$DSH_HOME/.credentials.yaml`:
+The same names can be stored in `$DSH_HOME/.credentials.yaml`:
 
 ```yaml
 LINEAR_API_KEY: lin_api_replace_me
+GITHUB_TOKEN: github_pat_replace_me
+JIRA_EMAIL: user@example.com
+JIRA_API_TOKEN: replace_me
+ASANA_ACCESS_TOKEN: replace_me
+GITLAB_TOKEN: glpat_replace_me
 ```
 
-Do not commit that file, real tokens, or command output containing tokens. The plugin resolves the credential at the start of each Linear operation and does not write the secret into plugin configuration, logs, RPC payloads, or Dashboard state.
+Do not commit that file, real tokens, or logs containing credentials. Each provider resolves its references at operation time. Dashboard displays only the reference name, configuration status, and credential source.
 
 ## WORKFLOW.md
 
-Start with [WORKFLOW.example.md](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/WORKFLOW.example.md). The YAML frontmatter controls tracker selection, polling, workspace behavior, lifecycle hooks, Agent limits, and visible board states. The Markdown body is rendered as the Agent prompt for each issue.
+Start with the Linear-oriented [WORKFLOW.example.md](./WORKFLOW.example.md) or a provider-specific example:
 
-Important fields:
+- [GitHub](./examples/WORKFLOW.github.md)
+- [Jira](./examples/WORKFLOW.jira.md)
+- [Asana](./examples/WORKFLOW.asana.md)
+- [GitLab](./examples/WORKFLOW.gitlab.md)
+- [Local tasks](./examples/WORKFLOW.local.md)
+
+Common fields:
 
 | Field | Description |
 | --- | --- |
-| `tracker.provider.project_slug` | Linear project slug, not its display name. |
-| `tracker.provider.context_label` | Short project label displayed beside the Dashboard title, such as `ENG`. |
-| `tracker.required_labels` | Labels that must all be present before an issue can be dispatched. |
+| `tracker.kind` | `linear`, `github`, `jira`, `asana`, `gitlab`, or `local`. |
+| `tracker.provider.context_label` | Optional short project label beside the Dashboard title. |
+| `tracker.required_labels` | Labels that must all be present before dispatch. |
 | `tracker.active_states` | States eligible for Agent execution. |
 | `tracker.terminal_states` | States that stop execution and trigger safe workspace cleanup. |
-| `workspace.root` | Parent directory containing one persistent workspace per issue. |
-| `hooks.timeout_ms` | Timeout applied to each lifecycle hook. |
+| `workspace.root` | Parent directory containing one persistent workspace per task. |
+| `hooks.timeout_ms` | Timeout applied independently to each lifecycle hook. |
 | `agent.max_concurrent_agents` | Global Agent concurrency limit. |
-| `agent.max_concurrent_agents_by_state` | Optional concurrency limits for individual tracker states. |
-| `agent.max_turns` | Maximum number of turns continued in one Harness session. |
+| `agent.max_concurrent_agents_by_state` | Optional concurrency limits for individual source states. |
+| `agent.max_turns` | Maximum turns continued in one Harness session. |
 | `agent.max_retry_backoff_ms` | Upper bound for retry backoff. |
-| `dashboard.visible_states` | Board columns displayed before the Hidden columns group. |
+| `dashboard.visible_states` | Board columns shown before the Hidden columns group. |
 
-The Liquid prompt can use issue fields such as `issue.identifier`, `issue.title`, `issue.description`, `issue.state`, `issue.labels`, and `issue.url`, plus the current retry `attempt`.
+Provider routing fields:
+
+| Provider | Required fields | Optional routing |
+| --- | --- | --- |
+| Linear | `project_slug` | `assignee: me` or a Linear assignee id |
+| GitHub | `owner`, `repo` | `assignee`, `state_labels` |
+| Jira | `site_url`, `project_key` | `assignee: me` or account id, additional `jql` |
+| Asana | `project_gid` | `assignee: me` or user gid |
+| GitLab | `project_id` as numeric id or namespace path | `assignee`, `state_labels` |
+| Local | `project_id` defaults to `local` | `context_label` |
+
+For GitHub and GitLab, `state_labels` maps workflow-state names to provider labels. A label whose name directly equals a declared state is also recognized. Opened issues without a matching label fall back to the first active state; closed issues without a matching terminal label fall back to the first terminal state.
+
+Jira uses native status names. Asana uses the task's section in the configured project; completed Asana tasks use the first terminal state.
+
+The Liquid prompt can reference `issue.identifier`, `issue.title`, `issue.description`, `issue.state`, `issue.labels`, `issue.url`, and the retry `attempt`.
+
+### Local task controls
+
+When `tracker.kind` is `local`, each visible column header shows a `+` button. New tasks are created directly in the selected column. Opening a card exposes edit and delete controls; title, description, state, and priority are editable.
+
+Local tasks are persisted by the Host, not `localStorage`. Writes are serialized and committed through a same-directory temporary file and atomic rename. Dashboard edits use the task's opened revision and are rejected if an Agent or another editor has already changed it. A malformed or unsupported store is rejected instead of being overwritten. Dashboard deletion removes only the task record; an existing Agent workspace is preserved.
 
 ### Lifecycle hooks
 
-- `after_create` runs only after a new issue workspace is created.
+- `after_create` runs only after a new task workspace is created.
 - `before_run` runs before every Agent attempt.
 - `after_run` runs after an Agent attempt while the workspace still exists.
 - `before_remove` runs before terminal workspace cleanup.
 
-Hooks execute as trusted local commands inside the issue workspace. Review them with the same care as build or deployment scripts.
+Hooks run as trusted local commands inside the task workspace. Review them with the same care as build or deployment scripts.
 
 ## Scheduling and workspace safety
 
-- Eligible issues are ordered by priority, creation time, and identifier.
-- Unresolved Linear `blocks` relations prevent dispatch and appear as blockers in Dashboard state.
-- Missing issues are stopped without being treated as terminal, so a transient tracker/query change does not delete their workspace.
+- Eligible tasks are ordered by priority, creation time, and identifier.
+- Linear `blocks` relations and Jira “is blocked by” links are projected as blockers when available.
+- Missing tasks stop running without being classified as terminal, so a transient query or provider change does not delete their workspace.
 - Workspace identifiers are normalized and containment-checked before filesystem mutation.
-- Workspace roots and issue directories must be real directories, not symbolic links.
-- Deletion targets are resolved again after `before_remove`; cleanup is refused if the root or target changed while the hook was running.
-- A failed `after_create` removes the incomplete new workspace so a later attempt can initialize it again.
-- Hook stdout and stderr are retained as bounded tails to prevent unbounded memory growth.
+- Workspace roots and task directories must be real directories, not symbolic links.
+- Deletion targets are resolved again after `before_remove`; cleanup is refused if the root or target changed while the hook ran.
+- A failed `after_create` removes the incomplete workspace so a later attempt can initialize it again.
+- Runtime claims and workspace names include the provider project scope, so equal issue numbers in different repositories or projects remain isolated.
+- Hook stdout and stderr are retained as bounded tails.
+- Remote Agent tools keep endpoints and credentials on the Host and restrict operations to the configured repository, project, or issue namespace where the provider API permits it.
 
-See [Security](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/security.md) and [Architecture](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/architecture.md) for the complete trust model and component boundaries.
+See [Security](./docs/security.md) and [Architecture](./docs/architecture.md) for the complete trust model and component boundaries.
 
 ## Dashboard
 
 The plugin registers through Harness-native UI slots:
 
-- `sidebar.footer.action` provides the Dashboard entry in the existing Harness sidebar.
+- `sidebar.footer.action` adds the Dashboard entry to the existing Harness sidebar.
 - `shell.overlay` renders the Dashboard in the main Harness content area.
 
 The plugin does not replace or duplicate the Harness sidebar.
 
-Available views:
-
-- **Board** — Linear-style task columns, hidden states, filtering, display controls, and issue inspection.
+- **Board** — source-native task columns, hidden states, filtering, Local task controls, and task inspection.
 - **Runtime** — running, retrying, and blocked records with turns, token usage, worker host, and update time.
-- **Configuration** — the active last-good workflow, tracker context, credential status, workspace root, polling interval, permission preset, and Agent limits.
+- **Configuration** — last-good workflow, provider context, each credential reference's health, workspace root, polling, permission preset, and Agent limits.
+
+Local task board loaded through the native Harness Dashboard entry:
+
+![Local task board loaded inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-tasks.jpg)
+
+Create and edit Local tasks without an external Tracker:
+
+![Local task editor inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-task-editor.jpg)
 
 ## Development and verification
 
@@ -249,24 +279,31 @@ For deterministic component development:
 pnpm run dev:dashboard
 ```
 
-Open `http://127.0.0.1:4173/dev/`. This page uses local fixtures and is useful for component-level visual and interaction checks. It does not connect to Linear and is not evidence that the packaged plugin loads correctly in Harness.
+`http://127.0.0.1:4173/dev/` uses fixtures and is useful for component-level visual and interaction checks. It is not evidence that the packaged plugin loads correctly in Harness.
 
-Integration verification should install the generated package, start `dsh web`, enter Dashboard from the native Harness sidebar, and check rendered state, interactions, browser console output, and Host logs.
+Integration verification must build or pack the plugin, install that artifact into a Harness Web profile, start `dsh web` from a dedicated workspace, enter Dashboard from the native sidebar, and check provider data, Local mutations, browser console output, and Host logs.
 
-Design references are kept in [docs/design](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/design/README.md).
+Design references are kept in [docs/design](./docs/design/README.md).
+
+## Upstream API references
+
+- [GitHub Issues REST API](https://docs.github.com/en/rest/issues/issues)
+- [Jira Cloud REST v3 enhanced issue search](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
+- [Asana tasks in a project](https://developers.asana.com/reference/gettasksforproject)
+- [GitLab Issues API](https://docs.gitlab.com/api/issues/)
 
 ## Relationship to Symphony
 
 This project reproduces Symphony's orchestration contract rather than embedding its Elixir/OTP implementation:
 
-- `TaskSource` provides the tracker boundary.
-- `HarnessAgentRunner` maps Agent execution and continuation onto native Harness sessions.
-- Persistent per-issue workspaces and lifecycle hooks follow Symphony-compatible semantics with additional fail-closed filesystem checks.
-- Trusted-host RPC projects observable state and a small set of runtime controls into the Dashboard.
+- `TaskSource` is the provider boundary.
+- `HarnessAgentRunner` maps execution and continuation onto native Harness sessions.
+- Persistent per-task workspaces and lifecycle hooks follow Symphony-compatible semantics with additional fail-closed filesystem checks.
+- Trusted Host RPC projects observable state and bounded controls into the browser.
 - The UI combines Symphony's operational signals with a Linear-style board inside the native Harness shell.
 
 Upstream reference: [openai/symphony](https://github.com/openai/symphony).
 
 ## License
 
-[MIT](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/LICENSE)
+[MIT](./LICENSE)

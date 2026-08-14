@@ -12,7 +12,7 @@
 
 ## 声明范围
 
-`package.json` 对 Harness peer 的范围是 `>=0.1.0-rc.5 <0.2.0`。这一范围表达第一阶段面向 rc.5/rc.6 API 家族；当前自动化编译和测试的实证版本是 rc.6。任何 rc.7 或后续 0.1.x 版本仍应重新执行以下检查，不能仅凭 semver 假定兼容：
+`package.json` 对 Harness peer 的范围是 `>=0.1.0-rc.5 <0.2.0`。当前自动化编译和测试的实证版本是 rc.6。任何 rc.7 或后续 0.1.x 版本仍应重新执行以下检查，不能仅凭 semver 假定兼容：
 
 1. `pnpm run typecheck`
 2. `pnpm test`
@@ -42,5 +42,5 @@
 
 - 未声称兼容 Harness `<rc.5` 或 `>=0.2.0`。
 - 未声称在 Linux/macOS 上完成 hook、symlink 和路径清理实机测试；实现保留跨平台路径逻辑，但当前开发/验证主机是 Windows。
-- 未声称完成真实 Linear mutation 或长期无人值守 burn-in；单元测试使用 mock GraphQL，真实凭据需要部署者单独验证。
+- 未声称使用真实 GitHub、Jira、Asana、GitLab 凭据完成写入或长期无人值守 burn-in；自动化测试使用 mock API，真实凭据需要部署者单独验证。
 - 未声称与上游 Symphony 的 Web UI 像素级一致；视觉基线是用户确认的本项目 Dashboard 规范。

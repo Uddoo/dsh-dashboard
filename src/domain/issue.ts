@@ -26,12 +26,14 @@ export interface TaskSourceContext {
 /**
  * Normalized task record.
  *
- * `nativeRef` is intentionally opaque: Linear ids, GitHub node ids, Jira keys,
- * and the future local-task ids all pass through the same core without being
+ * `scopeRef` identifies the configured provider project. `nativeRef` is
+ * intentionally opaque inside that scope: Linear ids, GitHub issue numbers,
+ * Jira keys, and local-task ids all pass through the same core without being
  * interpreted by the orchestrator.
  */
 export interface TaskIssue {
   readonly sourceKind: string
+  readonly scopeRef: string
   readonly nativeRef: string
   readonly identifier: string
   readonly title: string
@@ -49,8 +51,8 @@ export interface TaskIssue {
 }
 
 /** Collision-free process key used for claims and runtime maps. */
-export function issueKey(issue: Pick<TaskIssue, 'sourceKind' | 'nativeRef'>): string {
-  return `${issue.sourceKind}:${issue.nativeRef}`
+export function issueKey(issue: Pick<TaskIssue, 'sourceKind' | 'scopeRef' | 'nativeRef'>): string {
+  return [issue.sourceKind, issue.scopeRef, issue.nativeRef].map(encodeURIComponent).join(':')
 }
 
 /** Case- and surrounding-whitespace-insensitive state comparison. */

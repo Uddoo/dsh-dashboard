@@ -2,11 +2,12 @@
 
 ## 凭据
 
-- 配置只保存 `apiKeyRef`，不保存 Linear token。
-- 每个 GraphQL 操作调用 `ctx.credentials.resolve()`；不跨操作缓存 secret。
-- Configuration 只使用 `describe()` 的 `configured/source/writable`，不接收 credential value。
+- 配置只保存 credential reference，不保存远程 Provider token。
+- 每个远程操作调用 `ctx.credentials.resolve()`；不跨操作缓存 secret。Jira 的邮箱与 API token 是两个独立引用。
+- Configuration 只使用 `describe()` 的 `configured/source/writable`，不接收 credential value；Local 显示“不需要凭据”。
 - RPC snapshot、事件、日志和浏览器 fixture 均不包含真实 token。
-- 非 loopback Linear endpoint 必须使用 HTTPS。
+- 非 loopback Linear、GitHub、Jira、Asana 与 GitLab endpoint 必须使用 HTTPS。
+- REST Agent tool 拒绝 origin、查询、fragment、反斜杠以及原始或多重百分号编码的点段，避免 URL 规范化越出已验证的 Provider 路径前缀。
 
 ## 工作区
 
@@ -21,7 +22,15 @@
 - Hook 是用户在受信任 `WORKFLOW.md` 中写入的本机命令，具备 Harness 进程权限；它不是沙箱。仓库 clone/build 脚本必须由部署者审核。
 - Agent permission preset 是插件必填配置，不静默选择或提升权限。
 - Dashboard 的 Stop 是 Agent cancel；Pause 只停止派发新任务，已经运行的 Agent 不被自动中断。
-- `linear_graphql` 可以读写 Linear，是否允许具体 mutation 由 prompt、permission policy 和 Linear token 权限共同约束；Board 本身不发 mutation。
+- Provider Agent tool 可以写入远程任务，具体操作同时受路径约束、prompt、permission policy 与 token 权限约束；Board 本身不向远程 Provider 发 mutation。
+- Local `+`、编辑与删除只调用 trusted-host RPC。编辑提交携带打开任务时的更新时间，Host 会拒绝覆盖 Agent 或其他编辑器产生的较新版本。Local Agent tool 不开放删除；Dashboard 删除任务记录时保留已有 workspace。
+
+## Local 任务文件
+
+- 本地任务保存在 Host 配置的单一 JSON 文件中，不使用浏览器 `localStorage`。
+- 同一插件实例内 mutation 串行执行；写入使用同目录独占临时文件、flush 和原子 rename。
+- 已存在的目标必须是普通文件，符号链接或非文件目标会被拒绝。
+- JSON 损坏或 schema 版本不受支持时 fail closed，不会用空 store 覆盖原文件。
 
 ## 网络与浏览器
 
@@ -33,5 +42,5 @@
 
 - 当前 claim 仅在单个插件进程内互斥，不提供多主机分布式锁。
 - Hook 和 Agent 对 workspace 内资源的影响取决于部署者选择的 permission preset。
-- Linear raw GraphQL tool 是能力较大的 provider seam；生产部署应使用最小权限 token，并审核 WORKFLOW prompt。
-- 第一阶段未实现 webhook、审计数据库或跨重启 runtime 恢复；工作区持久，但 running/retry 内存状态不持久。
+- 远程 raw API tool 是能力较大的 Provider seam；生产部署应使用最小权限 token，并审核 WORKFLOW prompt。
+- 当前未实现 webhook、审计数据库或跨重启 runtime 恢复；工作区与 Local 任务持久，但 running/retry 内存状态不持久。

@@ -9,3 +9,17 @@
         linear:
           apiKeyRef: LINEAR_API_KEY
           endpoint: https://api.linear.app/graphql
+        github:
+          tokenRef: GITHUB_TOKEN
+          endpoint: https://api.github.com
+        jira:
+          emailRef: JIRA_EMAIL
+          apiTokenRef: JIRA_API_TOKEN
+        asana:
+          tokenRef: ASANA_ACCESS_TOKEN
+          endpoint: https://app.asana.com/api/1.0
+        gitlab:
+          tokenRef: GITLAB_TOKEN
+          endpoint: https://gitlab.com/api/v4
+        local:
+          storePath: ~/.dsh-dashboard/tasks.json

@@ -1,14 +1,19 @@
 {
   "name": "dsh-dashboard",
-  "version": "0.1.0",
-  "description": "A Symphony-compatible issue orchestrator and dashboard for DeepSeek Harness",
+  "version": "0.2.0",
+  "description": "A Symphony-compatible multi-provider task orchestrator and dashboard for DeepSeek Harness",
   "keywords": [
     "ai-agent",
     "dashboard",
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
+    "github",
+    "gitlab",
+    "jira",
     "linear",
+    "asana",
+    "local-tasks",
     "symphony"
   ],
   "homepage": "https://github.com/Uddoo/dsh-dashboard#readme",
@@ -47,6 +52,7 @@
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "WORKFLOW.example.md",
+    "examples/**/*.md",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"

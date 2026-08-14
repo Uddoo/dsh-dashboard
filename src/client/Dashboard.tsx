@@ -12,6 +12,7 @@ import {
 import type { TaskIssue } from '../domain/issue.ts'
 import { issueKey } from '../domain/issue.ts'
 import type { BoardColumn, DashboardSnapshot, IssueRuntimeView, TokenTotals } from '../runtime/types.ts'
+import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 import type { DashboardDataPort } from './controller.ts'
 import { DashboardUiController } from './controller.ts'
 import {
@@ -20,13 +21,16 @@ import {
   CloseIcon,
   CopyIcon,
   DisplayIcon,
+  EditIcon,
   ExternalIcon,
   FilterIcon,
   MoreIcon,
   PauseIcon,
   PlayIcon,
+  PlusIcon,
   RefreshIcon,
   StopIcon,
+  TrashIcon,
 } from './icons.tsx'
 
 export interface DashboardFooterActionProps {
@@ -70,7 +74,7 @@ export function DashboardOverlay({ ui, data, openSession }: DashboardOverlayProp
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') ui.close()
+      if (event.key === 'Escape' && document.querySelector('.dshd-modal') === null) ui.close()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown) }
@@ -89,6 +93,9 @@ export function DashboardOverlay({ ui, data, openSession }: DashboardOverlayProp
         onRefresh={() => data.refresh()}
         onPause={paused => data.setPaused(paused)}
         onStop={key => data.stopIssue(key)}
+        onCreateTask={input => data.createTask(input)}
+        onUpdateTask={(nativeRef, changes) => data.updateTask(nativeRef, changes)}
+        onDeleteTask={nativeRef => data.deleteTask(nativeRef)}
         onOpenSession={(sessionId) => { ui.close(); openSession(sessionId) }}
       />
     </div>
@@ -103,10 +110,16 @@ export interface DashboardSurfaceProps {
   readonly onRefresh: () => Promise<void>
   readonly onPause: (paused: boolean) => Promise<void>
   readonly onStop: (key: string) => Promise<void>
+  readonly onCreateTask: (input: CreateTaskInput) => Promise<void>
+  readonly onUpdateTask: (nativeRef: string, changes: UpdateTaskInput) => Promise<void>
+  readonly onDeleteTask: (nativeRef: string) => Promise<void>
   readonly onOpenSession: (sessionId: string) => void
 }
 
 type Tab = 'board' | 'runtime' | 'configuration'
+type TaskEditorState =
+  | { readonly mode: 'create'; readonly state: string }
+  | { readonly mode: 'edit'; readonly issue: TaskIssue }
 
 /** Primary view kept framework-agnostic enough for dev fixture rendering and browser QA. */
 export function DashboardSurface({
@@ -117,6 +130,9 @@ export function DashboardSurface({
   onRefresh,
   onPause,
   onStop,
+  onCreateTask,
+  onUpdateTask,
+  onDeleteTask,
   onOpenSession,
 }: DashboardSurfaceProps) {
   const [tab, setTab] = useState<Tab>('board')
@@ -124,6 +140,8 @@ export function DashboardSurface({
   const [filterOpen, setFilterOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const [showHidden, setShowHidden] = useState(true)
+  const [taskEditor, setTaskEditor] = useState<TaskEditorState | undefined>()
+  const [deleteTarget, setDeleteTarget] = useState<TaskIssue | undefined>()
   const deferredFilter = useDeferredValue(filter.trim().toLocaleLowerCase('en-US'))
   const issueMap = useMemo(() => {
     const map = new Map<string, TaskIssue>()
@@ -210,6 +228,7 @@ export function DashboardSurface({
               selectedKey={selectedKey}
               runtimeMap={runtimeMap}
               onSelect={setSelectedKey}
+              onCreate={snapshot?.taskMutations.canCreate === true ? state => setTaskEditor({ mode: 'create', state }) : undefined}
             />
           ) : null}
           {tab === 'runtime' ? <RuntimeView snapshot={snapshot} onSelect={(key) => { setSelectedKey(key); setTab('board') }} /> : null}
@@ -223,7 +242,31 @@ export function DashboardSurface({
           onClose={() => setSelectedKey(undefined)}
           onRefresh={onRefresh}
           onStop={onStop}
+          canUpdate={snapshot?.taskMutations.canUpdate === true}
+          canDelete={snapshot?.taskMutations.canDelete === true}
+          onEdit={() => setTaskEditor({ mode: 'edit', issue: selectedIssue })}
+          onDelete={() => setDeleteTarget(selectedIssue)}
           onOpenSession={onOpenSession}
+        />
+      ) : null}
+      {taskEditor !== undefined ? (
+        <TaskEditor
+          editor={taskEditor}
+          states={snapshot?.taskMutations.states ?? []}
+          onClose={() => setTaskEditor(undefined)}
+          onCreate={async (input) => { await onCreateTask(input); setTaskEditor(undefined) }}
+          onUpdate={async (nativeRef, changes) => { await onUpdateTask(nativeRef, changes); setTaskEditor(undefined) }}
+        />
+      ) : null}
+      {deleteTarget !== undefined ? (
+        <DeleteTaskDialog
+          issue={deleteTarget}
+          onClose={() => setDeleteTarget(undefined)}
+          onConfirm={async () => {
+            await onDeleteTask(deleteTarget.nativeRef)
+            setDeleteTarget(undefined)
+            setSelectedKey(undefined)
+          }}
         />
       ) : null}
     </div>
@@ -291,19 +334,20 @@ function Metric({ dot, label, value }: { readonly dot: 'green' | 'amber' | 'red'
   return <span className="dshd-metric"><span className={`dshd-dot dshd-dot-${dot}`} />{label}{value === undefined ? null : <>&nbsp;&nbsp;{value}</>}</span>
 }
 
-function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap, onSelect }: {
+function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap, onSelect, onCreate }: {
   readonly columns: readonly BoardColumn[]
   readonly hiddenColumns: readonly BoardColumn[]
   readonly showHidden: boolean
   readonly selectedKey?: string | undefined
   readonly runtimeMap: ReadonlyMap<string, IssueRuntimeView>
   readonly onSelect: (key: string) => void
+  readonly onCreate: ((state: string) => void) | undefined
 }) {
   return (
     <div className="dshd-board">
       <div className="dshd-columns">
         {columns.map(column => (
-          <IssueColumn key={column.name} column={column} selectedKey={selectedKey} runtimeMap={runtimeMap} onSelect={onSelect} />
+          <IssueColumn key={column.name} column={column} selectedKey={selectedKey} runtimeMap={runtimeMap} onSelect={onSelect} onCreate={onCreate} />
         ))}
         {showHidden && hiddenColumns.length > 0 ? <HiddenColumns columns={hiddenColumns} /> : null}
         {columns.length === 0 ? <div className="dshd-empty">No issues match the current project and filter.</div> : null}
@@ -312,11 +356,12 @@ function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap
   )
 }
 
-const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap, onSelect }: {
+const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap, onSelect, onCreate }: {
   readonly column: BoardColumn
   readonly selectedKey?: string | undefined
   readonly runtimeMap: ReadonlyMap<string, IssueRuntimeView>
   readonly onSelect: (key: string) => void
+  readonly onCreate: ((state: string) => void) | undefined
 }) {
   return (
     <section className="dshd-column">
@@ -325,6 +370,11 @@ const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap,
         <strong>{column.name}</strong>
         <span>{column.issues.length}</span>
         <span className="dshd-column-more"><MoreIcon size={18} /></span>
+        {onCreate === undefined ? null : (
+          <button type="button" className="dshd-column-add" aria-label={`Add task to ${column.name}`} onClick={() => onCreate(column.name)}>
+            <PlusIcon size={17} />
+          </button>
+        )}
       </header>
       <div className="dshd-card-list">
         {column.issues.map(issue => (
@@ -387,12 +437,16 @@ function HiddenColumns({ columns }: { readonly columns: readonly BoardColumn[] }
   )
 }
 
-function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, onOpenSession }: {
+function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate, canDelete, onEdit, onDelete, onOpenSession }: {
   readonly issue: TaskIssue
   readonly runtime?: IssueRuntimeView | undefined
   readonly onClose: () => void
   readonly onRefresh: () => Promise<void>
   readonly onStop: (key: string) => Promise<void>
+  readonly canUpdate: boolean
+  readonly canDelete: boolean
+  readonly onEdit: () => void
+  readonly onDelete: () => void
   readonly onOpenSession: (sessionId: string) => void
 }) {
   const [copyLabel, setCopyLabel] = useState('Copy workspace')
@@ -408,6 +462,8 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, onOpenSess
         <div><strong>{issue.identifier}</strong><span>{issue.title}</span></div>
         <div>
           {issue.url !== undefined ? <a href={issue.url} target="_blank" rel="noreferrer" aria-label="Open issue"><ExternalIcon size={18} /></a> : null}
+          {canUpdate ? <button type="button" aria-label="Edit local task" onClick={onEdit}><EditIcon size={17} /></button> : null}
+          {canDelete ? <button type="button" aria-label="Delete local task" onClick={onDelete}><TrashIcon size={17} /></button> : null}
           <button type="button" aria-label="Close inspector" onClick={onClose}><CloseIcon size={18} /></button>
         </div>
       </header>
@@ -461,6 +517,131 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, onOpenSess
   )
 }
 
+function TaskEditor({ editor, states, onClose, onCreate, onUpdate }: {
+  readonly editor: TaskEditorState
+  readonly states: readonly string[]
+  readonly onClose: () => void
+  readonly onCreate: (input: CreateTaskInput) => Promise<void>
+  readonly onUpdate: (nativeRef: string, changes: UpdateTaskInput) => Promise<void>
+}) {
+  const issue = editor.mode === 'edit' ? editor.issue : undefined
+  const [title, setTitle] = useState(issue?.title ?? '')
+  const [description, setDescription] = useState(issue?.description ?? '')
+  const [state, setState] = useState(issue?.state.name ?? (editor.mode === 'create' ? editor.state : states[0] ?? 'Todo'))
+  const [priority, setPriority] = useState(issue?.priority?.toString() ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const trimmedTitle = title.trim()
+  const normalizedDescription = description.trim() === '' ? undefined : description.trim()
+  const parsedPriority = priority === '' ? undefined : Number(priority)
+  const hasChanges = editor.mode === 'create' || trimmedTitle !== editor.issue.title
+    || normalizedDescription !== editor.issue.description
+    || state !== editor.issue.state.name
+    || parsedPriority !== editor.issue.priority
+  const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    setSaving(true)
+    setError(undefined)
+    try {
+      if (editor.mode === 'create') {
+        await onCreate({
+          title: trimmedTitle,
+          ...(normalizedDescription === undefined ? {} : { description: normalizedDescription }),
+          state,
+          ...(parsedPriority === undefined ? {} : { priority: parsedPriority }),
+        })
+      } else {
+        const changes: UpdateTaskInput = {
+          ...(trimmedTitle === editor.issue.title ? {} : { title: trimmedTitle }),
+          ...(normalizedDescription === editor.issue.description ? {} : { description: normalizedDescription ?? null }),
+          ...(state === editor.issue.state.name ? {} : { state }),
+          ...(parsedPriority === editor.issue.priority ? {} : { priority: parsedPriority ?? null }),
+          ...(editor.issue.updatedAt === undefined ? {} : { expectedUpdatedAt: editor.issue.updatedAt }),
+        }
+        await onUpdate(editor.issue.nativeRef, changes)
+      }
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError))
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="dshd-modal" role="presentation">
+      <form className="dshd-task-editor" role="dialog" aria-modal="true" aria-labelledby="dshd-task-editor-title" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }} onSubmit={event => { void submit(event) }}>
+        <header>
+          <div><span>Local task</span><h2 id="dshd-task-editor-title">{editor.mode === 'create' ? 'Create task' : `Edit ${editor.issue.identifier}`}</h2></div>
+          <button type="button" aria-label="Close task editor" onClick={onClose}><CloseIcon size={18} /></button>
+        </header>
+        <div className="dshd-editor-fields">
+          <label>
+            <span>Title</span>
+            <input autoFocus required maxLength={500} value={title} onChange={event => setTitle(event.currentTarget.value)} placeholder="What needs to be done?" />
+          </label>
+          <label>
+            <span>Description</span>
+            <textarea rows={6} value={description} onChange={event => setDescription(event.currentTarget.value)} placeholder="Add context, acceptance criteria, or a workpad." />
+          </label>
+          <div className="dshd-editor-row">
+            <label>
+              <span>State</span>
+              <select value={state} onChange={event => setState(event.currentTarget.value)}>
+                {states.map(value => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Priority</span>
+              <select value={priority} onChange={event => setPriority(event.currentTarget.value)}>
+                <option value="">No priority</option>
+                <option value="1">Urgent</option>
+                <option value="2">High</option>
+                <option value="3">Medium</option>
+                <option value="4">Low</option>
+              </select>
+            </label>
+          </div>
+          {error === undefined ? null : <div className="dshd-editor-error" role="alert">{error}</div>}
+        </div>
+        <footer>
+          <button type="button" onClick={onClose} disabled={saving}>Cancel</button>
+          <button type="submit" className="dshd-primary" disabled={saving || trimmedTitle === '' || !hasChanges}>{saving ? 'Saving…' : editor.mode === 'create' ? 'Create task' : 'Save changes'}</button>
+        </footer>
+      </form>
+    </div>
+  )
+}
+
+function DeleteTaskDialog({ issue, onClose, onConfirm }: {
+  readonly issue: TaskIssue
+  readonly onClose: () => void
+  readonly onConfirm: () => Promise<void>
+}) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const confirm = async (): Promise<void> => {
+    setDeleting(true)
+    setError(undefined)
+    try {
+      await onConfirm()
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : String(deleteError))
+      setDeleting(false)
+    }
+  }
+  return (
+    <div className="dshd-modal" role="presentation">
+      <section className="dshd-confirm" role="alertdialog" aria-modal="true" aria-labelledby="dshd-delete-title" aria-describedby="dshd-delete-description" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+        <header><TrashIcon size={20} /><h2 id="dshd-delete-title">Delete {issue.identifier}?</h2></header>
+        <p id="dshd-delete-description">This removes the task from the Host-local task store. Existing Agent workspaces are preserved.</p>
+        {error === undefined ? null : <div className="dshd-editor-error" role="alert">{error}</div>}
+        <footer>
+          <button type="button" onClick={onClose} disabled={deleting}>Cancel</button>
+          <button type="button" className="dshd-delete-confirm" onClick={() => { void confirm() }} disabled={deleting}>{deleting ? 'Deleting…' : 'Delete task'}</button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 function InspectorSection({ title, children, grow = false }: { readonly title: string; readonly children: React.ReactNode; readonly grow?: boolean }) {
   return <section className="dshd-inspector-section" data-grow={grow || undefined}><h2>{title}</h2>{children}</section>
 }
@@ -510,7 +691,14 @@ function ConfigurationView({ snapshot }: { readonly snapshot?: DashboardSnapshot
         <h3>Tracker</h3>
         <ConfigRow label="Provider" value={config?.trackerKind} />
         <ConfigRow label="Project" value={config?.projectRef} mono />
-        <ConfigRow label="Credential" value={`${config?.credentialRef ?? '—'} · ${config?.credentialConfigured ? `configured (${config.credentialSource ?? 'provider'})` : 'not configured'}`} mono />
+        {(config?.credentials.length ?? 0) === 0 ? <ConfigRow label="Credentials" value="Not required" /> : config?.credentials.map(credential => (
+          <ConfigRow
+            key={credential.ref}
+            label={credential.label}
+            value={`${credential.ref} · ${credential.configured ? `configured (${credential.source ?? 'provider'})` : 'not configured'}`}
+            mono
+          />
+        ))}
         <ConfigRow label="Active states" value={config?.activeStates.join(', ')} />
         <ConfigRow label="Terminal states" value={config?.terminalStates.join(', ')} />
       </section>

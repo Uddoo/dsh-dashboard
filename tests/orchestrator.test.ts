@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest'
 import type { AgentRunResult, HarnessAgentRunner } from '../src/agent/harness-runner.ts'
 import type { TaskIssue } from '../src/domain/issue.ts'
 import { issueKey } from '../src/domain/issue.ts'
-import type { LinearTaskSource } from '../src/linear/source.ts'
 import { DashboardOrchestrator } from '../src/orchestrator/orchestrator.ts'
 import type { IssueRuntimeView } from '../src/runtime/types.ts'
 import { emptyTokens } from '../src/runtime/types.ts'
@@ -39,6 +38,56 @@ interface OrchestratorAccess {
 }
 
 describe('DashboardOrchestrator reconciliation', () => {
+  it('forces a fresh board read after a mutation overlaps an older poll', async () => {
+    let releaseFirstRead: (() => void) | undefined
+    const firstReadGate = new Promise<void>(accept => { releaseFirstRead = accept })
+    let current: readonly TaskIssue[] = [task('Todo')]
+    let reads = 0
+    const source = {
+      kind: 'linear',
+      context: () => ({ kind: 'linear', providerLabel: 'Linear', projectLabel: 'ENG', projectRef: 'ENG' }),
+      listBoardIssues: vi.fn(async () => {
+        reads += 1
+        const captured = current
+        if (reads === 1) await firstReadGate
+        return captured
+      }),
+      listIssuesByStates: async () => [],
+      getIssuesByNativeRefs: async () => current,
+      updateTask: vi.fn(async () => {
+        current = [task('Done')]
+        return current[0]!
+      }),
+    } satisfies TaskSource
+    const store = {
+      path: 'WORKFLOW.md',
+      require: () => definition,
+      status: () => ({ current: definition }),
+    } as unknown as WorkflowStore
+    const orchestrator = new DashboardOrchestrator(
+      { logger: { warn: vi.fn() } } as unknown as Context,
+      store,
+      { require: vi.fn(() => source) } as unknown as TaskSourceRegistry,
+      {} as WorkspaceManager,
+      {} as HarnessAgentRunner,
+      { permissionPreset: 'workspace-write', workerHost: 'test' },
+    )
+    orchestrator.setPaused(true)
+
+    const stalePoll = orchestrator.refresh()
+    await vi.waitFor(() => { expect(reads).toBe(1) })
+    const mutation = orchestrator.updateTask('issue-1', { state: 'Done' })
+    await vi.waitFor(() => { expect(source.updateTask).toHaveBeenCalledOnce() })
+    releaseFirstRead?.()
+    await Promise.all([stalePoll, mutation])
+
+    expect(source.listBoardIssues).toHaveBeenCalledTimes(2)
+    const snapshot = await orchestrator.snapshot()
+    expect(snapshot.board.columns.flatMap(column => column.issues)).toMatchObject([{ state: { name: 'Done' } }])
+    const timer = (orchestrator as unknown as { timer?: NodeJS.Timeout }).timer
+    if (timer !== undefined) clearTimeout(timer)
+  })
+
   it('stops a missing running issue without classifying it as terminal or removing its workspace', async () => {
     const fixture = createFixture()
     const record = runningRecord(task('Todo'))
@@ -161,15 +210,14 @@ function createFixture(overrides: {
     sources,
     workspaces,
     runner,
-    { credentialStatus: vi.fn(async () => ({ configured: true, writable: false })) } as unknown as LinearTaskSource,
-    { permissionPreset: 'workspace-write', credentialRef: 'LINEAR_API_KEY', workerHost: 'test' },
+    { permissionPreset: 'workspace-write', workerHost: 'test' },
   )
   return { access: orchestrator as unknown as OrchestratorAccess, remove }
 }
 
 function task(state: string): TaskIssue {
   return {
-    sourceKind: 'linear', nativeRef: 'issue-1', identifier: 'ENG-1', title: 'Orchestrate safely',
+    sourceKind: 'linear', scopeRef: 'ENG', nativeRef: 'issue-1', identifier: 'ENG-1', title: 'Orchestrate safely',
     state: { name: state }, labels: [], blockedBy: [], dispatchable: true,
   }
 }

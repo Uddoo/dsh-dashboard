@@ -1,6 +1,7 @@
 /** Lossless-JSON Host ↔ Dashboard protocol. */
 
 import type { TaskIssue, TaskSourceContext } from '../domain/issue.ts'
+import type { CreateTaskInput, TaskSourceCredentialStatus, UpdateTaskInput } from '../task-source/index.ts'
 
 export interface TokenTotals {
   readonly input: number
@@ -69,16 +70,24 @@ export interface DashboardConfigurationView {
   readonly pollingIntervalMs?: number
   readonly permissionPreset: string
   readonly agentPreset?: string
-  readonly credentialRef: string
-  readonly credentialConfigured: boolean
+  readonly credentials: readonly TaskSourceCredentialStatus[]
+  /** Compatibility projection for clients built against 0.1.x. */
+  readonly credentialRef?: string
+  readonly credentialConfigured?: boolean
   readonly credentialSource?: string
-  readonly credentialWritable: boolean
+  readonly credentialWritable?: boolean
 }
 
 export interface DashboardSnapshot {
   readonly version: 1
   readonly generatedAt: string
   readonly context?: TaskSourceContext
+  readonly taskMutations: {
+    readonly canCreate: boolean
+    readonly canUpdate: boolean
+    readonly canDelete: boolean
+    readonly states: readonly string[]
+  }
   readonly paused: boolean
   readonly board: {
     readonly columns: readonly BoardColumn[]
@@ -109,6 +118,9 @@ export interface DashboardRpcMap {
   readonly issue: { input: { key: string }; output: IssueDetailView }
   readonly pause: { input: { paused: boolean }; output: DashboardSnapshot }
   readonly stop: { input: { key: string }; output: DashboardSnapshot }
+  readonly createTask: { input: CreateTaskInput; output: DashboardSnapshot }
+  readonly updateTask: { input: { nativeRef: string; changes: UpdateTaskInput }; output: DashboardSnapshot }
+  readonly deleteTask: { input: { nativeRef: string }; output: DashboardSnapshot }
 }
 
 export function emptyTokens(): TokenTotals {

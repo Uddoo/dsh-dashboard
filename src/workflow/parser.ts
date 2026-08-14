@@ -9,11 +9,7 @@ const nonBlank = z.string().trim().min(1)
 const schema = z.object({
   tracker: z.object({
     kind: nonBlank.default('linear'),
-    provider: z.object({
-      project_slug: nonBlank,
-      context_label: nonBlank.optional(),
-      assignee: nonBlank.optional(),
-    }),
+    provider: z.record(z.string(), z.unknown()),
     required_labels: z.array(nonBlank).default([]),
     active_states: z.array(nonBlank).min(1).default(['Todo', 'In Progress']),
     terminal_states: z.array(nonBlank).min(1).default(['Closed', 'Cancelled', 'Canceled', 'Duplicate', 'Done']),
@@ -75,14 +71,11 @@ export function parseWorkflow(text: string, sourcePath: string, now = new Date()
     throw new Error(`WORKFLOW.md configuration is invalid: ${message}`)
   }
   const value = parsed.data
+  const provider = normalizeProvider(value.tracker.kind, value.tracker.provider)
   return {
     tracker: {
       kind: value.tracker.kind,
-      provider: {
-        project_slug: value.tracker.provider.project_slug,
-        ...(value.tracker.provider.context_label === undefined ? {} : { context_label: value.tracker.provider.context_label }),
-        ...(value.tracker.provider.assignee === undefined ? {} : { assignee: value.tracker.provider.assignee }),
-      },
+      provider,
       required_labels: value.tracker.required_labels,
       active_states: value.tracker.active_states,
       terminal_states: value.tracker.terminal_states,
@@ -102,4 +95,49 @@ export function parseWorkflow(text: string, sourcePath: string, now = new Date()
     sourcePath,
     loadedAt: now.toISOString(),
   }
+}
+
+function normalizeProvider(kindValue: string, value: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  const kind = kindValue.trim().toLocaleLowerCase('en-US')
+  const provider = { ...value }
+  if (kind === 'gitlab' && typeof provider.project_id === 'number') {
+    if (!Number.isSafeInteger(provider.project_id) || provider.project_id <= 0) {
+      throw new Error('WORKFLOW.md configuration is invalid: tracker.provider.project_id: expected a positive integer or non-empty string')
+    }
+    provider.project_id = String(provider.project_id)
+  }
+  const requiredByKind: Readonly<Record<string, readonly string[]>> = {
+    linear: ['project_slug'],
+    github: ['owner', 'repo'],
+    jira: ['site_url', 'project_key'],
+    asana: ['project_gid'],
+    gitlab: ['project_id'],
+  }
+  for (const field of requiredByKind[kind] ?? []) {
+    if (typeof provider[field] !== 'string' || provider[field].trim() === '') {
+      throw new Error(`WORKFLOW.md configuration is invalid: tracker.provider.${field}: required for tracker kind ${kind}`)
+    }
+  }
+  for (const field of ['context_label', 'assignee']) {
+    const candidate = provider[field]
+    if (candidate !== undefined && (typeof candidate !== 'string' || candidate.trim() === '')) {
+      throw new Error(`WORKFLOW.md configuration is invalid: tracker.provider.${field}: expected a non-empty string`)
+    }
+  }
+  if (provider.state_labels !== undefined) {
+    if (!isStringRecord(provider.state_labels)) {
+      throw new Error('WORKFLOW.md configuration is invalid: tracker.provider.state_labels: expected a state-to-label string map')
+    }
+  }
+  if (kind === 'local' && (typeof provider.project_id !== 'string' || provider.project_id.trim() === '')) {
+    provider.project_id = 'local'
+  }
+  return provider
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.entries(value).every(([key, item]) => key.trim() !== '' && typeof item === 'string' && item.trim() !== '')
 }

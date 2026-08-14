@@ -32,4 +32,54 @@ workspace:
 ---
 `, 'WORKFLOW.md')).toThrow('prompt body must not be empty')
   })
+
+  it.each([
+    ['github', 'owner: openai\n    repo: example'],
+    ['jira', 'site_url: https://example.atlassian.net\n    project_key: ENG'],
+    ['asana', 'project_gid: "1200"'],
+    ['gitlab', 'project_id: group/repo'],
+    ['local', 'context_label: Personal'],
+  ])('validates the built-in %s provider routing shape', (kind, provider) => {
+    const result = parseWorkflow(`---
+tracker:
+  kind: ${kind}
+  provider:
+    ${provider}
+workspace:
+  root: .workspaces
+---
+Work on the task.
+`, 'WORKFLOW.md')
+
+    expect(result.tracker.kind).toBe(kind)
+    if (kind === 'local') expect(result.tracker.provider.project_id).toBe('local')
+  })
+
+  it('fails early when a built-in provider is missing its routing identity', () => {
+    expect(() => parseWorkflow(`---
+tracker:
+  kind: github
+  provider:
+    owner: openai
+workspace:
+  root: .workspaces
+---
+Work on the task.
+`, 'WORKFLOW.md')).toThrow('tracker.provider.repo')
+  })
+
+  it('accepts a positive numeric GitLab project id and normalizes it for API routing', () => {
+    const result = parseWorkflow(`---
+tracker:
+  kind: gitlab
+  provider:
+    project_id: 12345
+workspace:
+  root: .workspaces
+---
+Work on the task.
+`, 'WORKFLOW.md')
+
+    expect(result.tracker.provider.project_id).toBe('12345')
+  })
 })

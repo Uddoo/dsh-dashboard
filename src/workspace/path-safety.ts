@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { isAbsolute, relative, resolve } from 'node:path'
+import type { TaskIssue } from '../domain/issue.ts'
 
 const UNSAFE = /[^A-Za-z0-9._-]/g
 
@@ -25,6 +26,11 @@ export function workspaceLeaf(identifier: string): string {
   if (base === trimmed) return base
   const digest = createHash('sha256').update(trimmed, 'utf8').digest('hex').slice(0, 16)
   return `${base}-${digest}`
+}
+
+/** Scope one workspace by provider, configured project, and human-facing task id. */
+export function issueWorkspaceLeaf(issue: Pick<TaskIssue, 'sourceKind' | 'scopeRef' | 'identifier'>): string {
+  return workspaceLeaf(`${issue.sourceKind}-${issue.scopeRef}-${issue.identifier}`)
 }
 
 /** Resolve a configured root relative to the plugin process working directory. */
