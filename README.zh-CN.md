@@ -305,9 +305,13 @@ Dashboard 文案接入 Harness 原生本地化服务。简体中文和英文资�
 
 ![DeepSeek Harness 中的项目发现确认窗口](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-project-scan-desktop.png)
 
-通过 Harness 原生 Dashboard 入口加载的 Local 任务看板：
+通过 Harness 原生 Dashboard 入口加载的组合式 Local 任务看板。它使用一个当前 Project 演示跨业务域的规划、执行、人工审核、返工/合并和终态节点，但不暗示系统会自主领取多个 Project 的任务：
 
-![在 DeepSeek Harness 中加载的 Local 任务看板](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-tasks.jpg)
+![在 DeepSeek Harness 中加载的组合式 Local 任务看板](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-global-board.png)
+
+任务详情在同一看板上下文中集中呈现选中任务、来源状态、工作区、Agent 动态、令牌和最近事件：
+
+![DeepSeek Harness 中的 Local 任务详情](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-task-inspector.png)
 
 无需外部 Tracker，直接创建和编辑 Local 任务：
 

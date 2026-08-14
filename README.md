@@ -305,9 +305,13 @@ Bounded discovery keeps candidates behind an explicit review step:
 
 ![Project discovery confirmation inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-project-scan-desktop.png)
 
-Local task board loaded through the native Harness Dashboard entry:
+Portfolio-style Local task board loaded through the native Harness Dashboard entry. This single current Project demonstrates cross-domain planning, active work, human review, rework/merging, and terminal nodes without implying autonomous cross-project claims:
 
-![Local task board loaded inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-tasks.jpg)
+![Portfolio-style Local task board loaded inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-global-board.png)
+
+Task inspection keeps the selected card, source state, workspace, Agent activity, tokens, and recent events in one board context:
+
+![Local task inspector inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-local-task-inspector.png)
 
 Create and edit Local tasks without an external Tracker:
 
