@@ -4,7 +4,7 @@
 
 `dsh-dashboard` 是一个面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Symphony 兼容任务编排器与运行看板。它将 Linear 任务转换为相互隔离的 Harness Agent 运行，同时保留 Harness 原生的外壳、侧栏、会话、工具、模型选择和权限系统。
 
-![运行在 DeepSeek Harness 原生外壳中的 Dashboard](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/v0.1.0/docs/design/dashboard-board-runtime-v1.png)
+![运行在 DeepSeek Harness 原生外壳中的 Linear 看板](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-board.jpg)
 
 ## 主要能力
 
@@ -17,6 +17,14 @@
 - Linear 凭据始终留在受信任的 Host 侧，不会经由 Dashboard RPC 发送，也不会渲染到浏览器中。
 
 Dashboard 标题旁的 `Linear · ENG` 是动态任务源上下文，provider 名称和项目短标签均来自当前配置。
+
+## 真实集成截图
+
+这些截图来自加载 npm 已发布插件的真实 DeepSeek Harness Web profile，并连接到一次性 Linear 测试项目。Runtime 画面记录了原生 Harness Agent 刚完成派发时的活动 worker；Configuration 画面展示当前工作流边界，但不会暴露凭据值。
+
+| Harness 原生 Agent Runtime | 当前工作流配置 |
+| --- | --- |
+| ![由 Harness 原生 Agent 执行的 Linear 任务](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-runtime.jpg) | ![Dashboard 的工作流、Tracker 与 Harness Agent 配置](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-configuration.jpg) |
 
 ## 工作原理
 

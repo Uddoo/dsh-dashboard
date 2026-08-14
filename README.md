@@ -4,7 +4,7 @@ English | [简体中文](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/READ
 
 `dsh-dashboard` is a Symphony-compatible issue orchestrator and operations dashboard for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It turns Linear issues into isolated Harness Agent runs while preserving the native Harness shell, sidebar, sessions, tools, model selection, and permission system.
 
-![Dashboard running inside the DeepSeek Harness shell](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/v0.1.0/docs/design/dashboard-board-runtime-v1.png)
+![Linear board running inside the native DeepSeek Harness shell](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-board.jpg)
 
 ## Highlights
 
@@ -17,6 +17,14 @@ English | [简体中文](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/READ
 - Keeps Linear credentials on the trusted Host side; secrets are never sent through Dashboard RPC or rendered in the browser.
 
 The `Linear · ENG` control beside the Dashboard title is dynamic task-source context. Both the provider label and project label come from the active configuration.
+
+## Live integration screenshots
+
+These screenshots were captured from the npm-published plugin loaded by a real DeepSeek Harness Web profile and connected to a disposable Linear project. The Runtime view shows a native Harness Agent worker immediately after dispatch; the Configuration view shows the active workflow boundary without exposing credential values.
+
+| Native Harness Agent runtime | Active workflow configuration |
+| --- | --- |
+| ![A Linear issue running through a native Harness Agent](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-runtime.jpg) | ![Dashboard workflow, tracker, and Harness Agent configuration](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-configuration.jpg) |
 
 ## How it works
 
