@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import type { DashboardSnapshot } from '../runtime/types.ts'
 import { DashboardSurface } from './Dashboard.tsx'
 import { DashboardI18nProvider, createDashboardTranslator } from './i18n.tsx'
-import { fixtureSnapshot } from './fixture.ts'
+import { fixtureSnapshot, globalFixtureSnapshot, localFixtureSnapshot } from './fixture.ts'
 import { installDashboardStyles } from './styles.ts'
 
 installDashboardStyles()
@@ -37,6 +37,12 @@ function DevApp() {
       onCreateTask={async () => {}}
       onUpdateTask={async () => {}}
       onDeleteTask={async () => {}}
+      onSwitchProject={async (projectId) => {
+        if (projectId === '08b8e62d-5a7c-4a3a-a582-b63278347db0') setSnapshot(fixtureSnapshot)
+        else if (projectId === '4bceae56-7cc1-4419-a912-a6ea110448fb') setSnapshot(localFixtureSnapshot)
+        else throw new Error(`Unknown fixture project: ${projectId}`)
+      }}
+      onSwitchGlobal={async () => { setSnapshot(globalFixtureSnapshot) }}
       onAddDiscoveryRoot={async (input) => {
         const timestamp = new Date().toISOString()
         setSnapshot(current => ({

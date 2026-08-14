@@ -6,6 +6,7 @@ import { DashboardI18nProvider, createDashboardTranslator } from '../src/client/
 import { fixtureSnapshot } from '../src/client/fixture.ts'
 
 const catalogCallbacks = {
+  onSwitchProject: async () => {},
   onAddDiscoveryRoot: async () => {},
   onRemoveDiscoveryRoot: async () => {},
   onScanProjects: async () => ({ root: fixtureSnapshot.catalog.discoveryRoots[0]!, candidates: [], truncated: false }),
@@ -95,6 +96,11 @@ describe('Dashboard visual contract', () => {
 
     expect(markup).toContain('<h1>Dashboard</h1>')
     expect(markup).toContain('Agent capacity')
+    expect(markup).toContain('aria-label="Issue runtime filters"')
+    expect(markup).toContain('aria-label="Show only Running issues"')
+    expect(markup).toContain('aria-pressed="false"')
+    expect(markup).toContain('aria-label="Collapse hidden columns"')
+    expect(markup).toContain('aria-expanded="true"')
     expect(markup).toContain('Hidden columns')
   })
 })

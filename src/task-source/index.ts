@@ -85,6 +85,12 @@ export interface TaskSource {
   executeRaw?(query: string, variables: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<unknown>
 }
 
+/** Minimal source lookup contract consumed by one project orchestrator. */
+export interface TaskSourceResolver {
+  require(kind: string): TaskSource
+  readonly kinds: readonly string[]
+}
+
 /** Preserve the pre-0.2 GraphQL seam while external providers migrate to `agentTool()`. */
 export function resolveTaskSourceAgentTool(source: TaskSource): TaskSourceAgentTool | undefined {
   const explicit = source.agentTool?.()
@@ -108,6 +114,7 @@ declare module '@deepseek-ai/cordis' {
 /** Layer-owned registry; later providers register without importing the Linear implementation. */
 export class TaskSourceRegistry extends Service {
   private readonly sources = new Map<string, TaskSource>()
+  private readonly scopedSources = new Map<string, Map<string, TaskSource>>()
 
   constructor(ctx: Context) {
     super(ctx, 'dashboardTaskSources')
@@ -124,6 +131,13 @@ export class TaskSourceRegistry extends Service {
     }, `dashboardTaskSources.register(${JSON.stringify(source.kind)})`)
   }
 
+  /** Create a project-owned view whose built-ins cannot collide with another project. */
+  scope(id: string): ScopedTaskSourceRegistry {
+    const key = id.trim()
+    if (key === '') throw new Error('dsh-dashboard: task source scope id must not be empty')
+    return new ScopedTaskSourceRegistry(this, key)
+  }
+
   /** Resolve one provider kind or fail with the current catalog. */
   require(kind: string): TaskSource {
     const source = this.sources.get(kind)
@@ -134,5 +148,56 @@ export class TaskSourceRegistry extends Service {
   /** Registered provider ids in deterministic order. */
   get kinds(): readonly string[] {
     return [...this.sources.keys()].sort()
+  }
+
+  registerScoped(scope: string, source: TaskSource): () => void {
+    let sources = this.scopedSources.get(scope)
+    if (sources === undefined) {
+      sources = new Map()
+      this.scopedSources.set(scope, sources)
+    }
+    if (sources.has(source.kind)) {
+      throw new Error(`dsh-dashboard: task source ${JSON.stringify(source.kind)} is already registered for scope ${JSON.stringify(scope)}`)
+    }
+    sources.set(source.kind, source)
+    return () => {
+      const current = this.scopedSources.get(scope)
+      current?.delete(source.kind)
+      if (current?.size === 0) this.scopedSources.delete(scope)
+    }
+  }
+
+  requireScoped(scope: string, kind: string): TaskSource {
+    const source = this.scopedSources.get(scope)?.get(kind) ?? this.sources.get(kind)
+    if (source !== undefined) return source
+    const known = this.scopedKinds(scope)
+    throw new Error(`dsh-dashboard: task source ${JSON.stringify(kind)} is not registered for scope ${JSON.stringify(scope)} (known: ${known.join(', ') || 'none'})`)
+  }
+
+  scopedKinds(scope: string): readonly string[] {
+    return [...new Set([
+      ...this.sources.keys(),
+      ...(this.scopedSources.get(scope)?.keys() ?? []),
+    ])].sort()
+  }
+}
+
+/** Project-local resolver backed by the one Harness service registry. */
+export class ScopedTaskSourceRegistry implements TaskSourceResolver {
+  constructor(
+    private readonly registry: TaskSourceRegistry,
+    readonly scope: string,
+  ) {}
+
+  register(source: TaskSource): () => void {
+    return this.registry.registerScoped(this.scope, source)
+  }
+
+  require(kind: string): TaskSource {
+    return this.registry.requireScoped(this.scope, kind)
+  }
+
+  get kinds(): readonly string[] {
+    return this.registry.scopedKinds(this.scope)
   }
 }

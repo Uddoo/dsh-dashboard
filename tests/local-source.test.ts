@@ -52,6 +52,31 @@ describe('LocalTaskSource', () => {
     expect(JSON.parse(await readFile(storePath, 'utf8'))).toMatchObject({ version: 1, projects: { personal: { nextNumber: 3 } } })
   })
 
+  it('serializes mutations from separate project sources that share one store file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-dashboard-local-'))
+    temporaryDirectories.push(directory)
+    const storePath = join(directory, 'tasks.json')
+    const sourceFor = (projectId: string) => new LocalTaskSource({ storePath }, () => ({
+      projectId,
+      states: ['Todo', 'Done'],
+      activeStates: ['Todo'],
+      terminalStates: ['Done'],
+    }))
+    const alpha = sourceFor('alpha')
+    const beta = sourceFor('beta')
+
+    await Promise.all([
+      alpha.createTask({ title: 'Alpha task' }),
+      beta.createTask({ title: 'Beta task' }),
+    ])
+
+    expect(await sourceFor('alpha').listBoardIssues()).toMatchObject([{ title: 'Alpha task' }])
+    expect(await sourceFor('beta').listBoardIssues()).toMatchObject([{ title: 'Beta task' }])
+    expect(JSON.parse(await readFile(storePath, 'utf8'))).toMatchObject({
+      projects: { alpha: { nextNumber: 2 }, beta: { nextNumber: 2 } },
+    })
+  })
+
   it('rejects states outside the current workflow instead of silently inventing columns', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-dashboard-local-'))
     temporaryDirectories.push(directory)

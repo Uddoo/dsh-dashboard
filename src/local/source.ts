@@ -37,6 +37,9 @@ interface LocalStore {
   readonly projects: Record<string, StoredProject>
 }
 
+/** One process-wide write tail per physical Local store. */
+const storeMutationQueues = new Map<string, Promise<void>>()
+
 export interface LocalSourceConfig {
   readonly storePath: string
 }
@@ -52,10 +55,11 @@ export interface LocalRoutingConfig {
 export class LocalTaskSource implements TaskSource {
   readonly kind = 'local'
   readonly storePath: string
-  private mutationQueue: Promise<void> = Promise.resolve()
+  private readonly storeQueueKey: string
 
   constructor(private readonly config: LocalSourceConfig, private readonly routing: () => LocalRoutingConfig) {
     this.storePath = expandPath(config.storePath)
+    this.storeQueueKey = pathKey(this.storePath)
   }
 
   context(): TaskSourceContext {
@@ -74,7 +78,7 @@ export class LocalTaskSource implements TaskSource {
 
   async listBoardIssues(signal?: AbortSignal): Promise<readonly TaskIssue[]> {
     throwIfAborted(signal)
-    await this.mutationQueue
+    await storeMutationQueues.get(this.storeQueueKey)
     const routing = this.validRouting()
     const store = await this.readStore()
     return (store.projects[routing.projectId]?.issues ?? []).map(issue => normalizeIssue(issue, routing))
@@ -206,8 +210,13 @@ export class LocalTaskSource implements TaskSource {
   }
 
   private async serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.mutationQueue.then(operation, operation)
-    this.mutationQueue = result.then(() => undefined, () => undefined)
+    const previous = storeMutationQueues.get(this.storeQueueKey) ?? Promise.resolve()
+    const result = previous.then(operation, operation)
+    const tail = result.then(() => undefined, () => undefined)
+    storeMutationQueues.set(this.storeQueueKey, tail)
+    void tail.finally(() => {
+      if (storeMutationQueues.get(this.storeQueueKey) === tail) storeMutationQueues.delete(this.storeQueueKey)
+    })
     return await result
   }
 
@@ -323,6 +332,10 @@ function nextUpdatedAt(previous: string): string {
 function expandPath(value: string): string {
   const expanded = value === '~' ? homedir() : value.startsWith('~/') || value.startsWith('~\\') ? join(homedir(), value.slice(2)) : value
   return isAbsolute(expanded) ? resolve(expanded) : resolve(process.cwd(), expanded)
+}
+
+function pathKey(path: string): string {
+  return process.platform === 'win32' ? path.toLocaleLowerCase('en-US') : path
 }
 
 function decodeStore(value: unknown, path: string): LocalStore {

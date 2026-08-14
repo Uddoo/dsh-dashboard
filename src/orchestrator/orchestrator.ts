@@ -14,7 +14,7 @@ import type {
   TokenTotals,
 } from '../runtime/types.ts'
 import { addTokens, emptyTokens } from '../runtime/types.ts'
-import type { CreateTaskInput, TaskSourceRegistry, UpdateTaskInput } from '../task-source/index.ts'
+import type { CreateTaskInput, TaskSourceResolver, UpdateTaskInput } from '../task-source/index.ts'
 import type { WorkflowStore } from '../workflow/store.ts'
 import type { WorkflowDefinition } from '../workflow/types.ts'
 import type { WorkspaceManager } from '../workspace/manager.ts'
@@ -56,14 +56,17 @@ export class DashboardOrchestrator {
   private lastError: string | undefined
   private timer: NodeJS.Timeout | undefined
   private refreshing: Promise<void> | undefined
+  private refreshingDispatchEnabled = false
   private stopped = false
+  /** Preserves direct/manual refresh semantics before lifecycle scheduling starts. */
+  private active = true
   private readonly manualStops = new Set<string>()
   private readonly terminalStops = new Set<string>()
 
   constructor(
     private readonly ctx: Context,
     private readonly workflow: WorkflowStore,
-    private readonly sources: TaskSourceRegistry,
+    private readonly sources: TaskSourceResolver,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: HarnessAgentRunner,
     private readonly catalog: ProjectCatalog,
@@ -71,12 +74,16 @@ export class DashboardOrchestrator {
   ) {}
 
   /** Start polling immediately; caller owns the returned asynchronous disposer. */
-  start(): () => Promise<void> {
+  start(active = true): () => Promise<void> {
     this.stopped = false
-    const unsubscribe = this.workflow.subscribe(() => { this.schedule(0) })
-    this.schedule(0)
+    this.active = active
+    const unsubscribe = this.workflow.subscribe(() => {
+      if (this.active) this.schedule(0)
+    })
+    if (active) this.schedule(0)
     return async () => {
       this.stopped = true
+      this.active = false
       unsubscribe()
       if (this.timer !== undefined) clearTimeout(this.timer)
       this.timer = undefined
@@ -87,11 +94,36 @@ export class DashboardOrchestrator {
 
   /** Coalesced manual or timer refresh. */
   async refresh(): Promise<void> {
-    if (this.refreshing !== undefined) return await this.refreshing
-    const job = this.poll().finally(() => {
-      if (this.refreshing === job) this.refreshing = undefined
+    if (this.stopped || !this.active) return
+    if (this.refreshing !== undefined) {
+      const dispatchEnabled = this.refreshingDispatchEnabled
+      await this.refreshing
+      if (!dispatchEnabled && !this.stopped && this.active) await this.refresh()
+      return
+    }
+    const job = this.poll(true).finally(() => {
+      if (this.refreshing === job) {
+        this.refreshing = undefined
+        this.refreshingDispatchEnabled = false
+      }
       this.scheduleNext()
     })
+    this.refreshingDispatchEnabled = true
+    this.refreshing = job
+    return await job
+  }
+
+  /** Refresh provider state for a composite view without dispatching new Agents. */
+  async refreshOverview(): Promise<void> {
+    if (this.stopped) return
+    if (this.refreshing !== undefined) return await this.refreshing
+    const job = this.poll(false).finally(() => {
+      if (this.refreshing === job) {
+        this.refreshing = undefined
+        this.refreshingDispatchEnabled = false
+      }
+    })
+    this.refreshingDispatchEnabled = false
     this.refreshing = job
     return await job
   }
@@ -99,6 +131,32 @@ export class DashboardOrchestrator {
   setPaused(paused: boolean): void {
     this.paused = paused
     if (!paused) this.schedule(0)
+  }
+
+  /** Activate or suspend polling without aborting Agents already owned by this project. */
+  setActive(active: boolean): void {
+    if (this.stopped || this.active === active) return
+    this.active = active
+    if (active) {
+      this.schedule(0)
+      return
+    }
+    if (this.timer !== undefined) clearTimeout(this.timer)
+    this.timer = undefined
+    this.nextRefreshAt = undefined
+  }
+
+  runtimeActivity(): { readonly running: number; readonly retrying: number } {
+    return { running: this.running.size, retrying: this.retries.size }
+  }
+
+  /** Current project-owned refresh cadence used by composite scheduling. */
+  pollingIntervalMs(): number {
+    try {
+      return this.workflow.require().polling.interval_ms
+    } catch {
+      return 5_000
+    }
   }
 
   stopIssue(key: string): boolean {
@@ -122,6 +180,7 @@ export class DashboardOrchestrator {
     return {
       version: 2,
       generatedAt: new Date().toISOString(),
+      selection: { mode: 'project' },
       ...(context === undefined ? {} : { context }),
       taskMutations: {
         canCreate: capabilities.create,
@@ -213,8 +272,8 @@ export class DashboardOrchestrator {
     return { issue, ...(runtime === undefined ? {} : { runtime }) }
   }
 
-  private async poll(): Promise<void> {
-    if (this.stopped) return
+  private async poll(dispatchEnabled: boolean): Promise<void> {
+    if (this.stopped || (dispatchEnabled && !this.active)) return
     try {
       const definition = this.workflow.require()
       const source = this.sources.require(definition.tracker.kind)
@@ -223,7 +282,9 @@ export class DashboardOrchestrator {
       this.lastRefreshAt = new Date().toISOString()
       this.lastError = undefined
       await this.reconcileRuntime(board, definition)
-      if (!this.paused) this.dispatch(board, definition)
+      // Provider reads can outlive a project/global selection change. Re-check
+      // ownership after the await so stale polls cannot launch new Agents.
+      if (dispatchEnabled && this.active && !this.paused) this.dispatch(board, definition)
     } catch (error) {
       this.lastRefreshAt = new Date().toISOString()
       this.lastError = error instanceof Error ? error.message : String(error)
@@ -440,7 +501,7 @@ export class DashboardOrchestrator {
   }
 
   private scheduleNext(): void {
-    if (this.stopped) return
+    if (this.stopped || !this.active) return
     let interval = 5000
     try {
       interval = this.workflow.require().polling.interval_ms
@@ -454,7 +515,7 @@ export class DashboardOrchestrator {
   }
 
   private schedule(delayMs: number): void {
-    if (this.stopped) return
+    if (this.stopped || !this.active) return
     if (this.timer !== undefined) clearTimeout(this.timer)
     const dueAt = Date.now() + delayMs
     this.nextRefreshAt = new Date(dueAt).toISOString()

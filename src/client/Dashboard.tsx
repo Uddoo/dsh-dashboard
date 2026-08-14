@@ -4,15 +4,18 @@ import {
   memo,
   useDeferredValue,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from 'react'
+import type { ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { TaskIssue } from '../domain/issue.ts'
+import type { TaskIssue, TaskIssueOrigin } from '../domain/issue.ts'
 import { issueKey } from '../domain/issue.ts'
-import type { AddDiscoveryRootInput, DiscoveryRootRecord, ProjectScanResult, RegisterProjectInput } from '../catalog/types.ts'
+import type { AddDiscoveryRootInput, DiscoveryRootRecord, ProjectScanResult, ProjectView, RegisterProjectInput } from '../catalog/types.ts'
 import type { BoardColumn, DashboardSnapshot, IssueRuntimeView, TokenTotals } from '../runtime/types.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 import type { DashboardDataPort } from './controller.ts'
@@ -21,6 +24,7 @@ import { dashboardErrorMessage } from './errors.ts'
 import { DashboardI18nProvider, useDashboardTranslation } from './i18n.tsx'
 import {
   BoardIcon,
+  CheckIcon,
   ChevronIcon,
   CloseIcon,
   CopyIcon,
@@ -36,6 +40,7 @@ import {
   PlayIcon,
   PlusIcon,
   RefreshIcon,
+  SearchIcon,
   StopIcon,
   TrashIcon,
 } from './icons.tsx'
@@ -105,6 +110,8 @@ export function DashboardOverlay({ ui, data, openSession, t }: DashboardOverlayP
           onCreateTask={input => data.createTask(input)}
           onUpdateTask={(nativeRef, changes) => data.updateTask(nativeRef, changes)}
           onDeleteTask={nativeRef => data.deleteTask(nativeRef)}
+          onSwitchProject={projectId => data.switchProject(projectId)}
+          onSwitchGlobal={() => data.switchGlobal()}
           onAddDiscoveryRoot={input => data.addDiscoveryRoot(input)}
           onRemoveDiscoveryRoot={id => data.removeDiscoveryRoot(id)}
           onScanProjects={rootId => data.scanProjects(rootId)}
@@ -128,6 +135,8 @@ export interface DashboardSurfaceProps {
   readonly onCreateTask: (input: CreateTaskInput) => Promise<void>
   readonly onUpdateTask: (nativeRef: string, changes: UpdateTaskInput) => Promise<void>
   readonly onDeleteTask: (nativeRef: string) => Promise<void>
+  readonly onSwitchProject: (projectId: string) => Promise<void>
+  readonly onSwitchGlobal?: (() => Promise<void>) | undefined
   readonly onAddDiscoveryRoot: (input: AddDiscoveryRootInput) => Promise<void>
   readonly onRemoveDiscoveryRoot: (id: string) => Promise<void>
   readonly onScanProjects: (rootId: string) => Promise<ProjectScanResult>
@@ -137,6 +146,7 @@ export interface DashboardSurfaceProps {
 }
 
 type Tab = 'board' | 'runtime' | 'projects' | 'configuration'
+type RuntimePhaseFilter = Extract<IssueRuntimeView['phase'], 'running' | 'retrying' | 'blocked'>
 type TaskEditorState =
   | { readonly mode: 'create'; readonly state: string }
   | { readonly mode: 'edit'; readonly issue: TaskIssue }
@@ -158,6 +168,8 @@ export function DashboardSurface({
   onCreateTask,
   onUpdateTask,
   onDeleteTask,
+  onSwitchProject,
+  onSwitchGlobal = async () => undefined,
   onAddDiscoveryRoot,
   onRemoveDiscoveryRoot,
   onScanProjects,
@@ -170,6 +182,8 @@ export function DashboardSurface({
   const [selectedKey, setSelectedKey] = useState<string | undefined>(initialSelectedKey)
   const [filterOpen, setFilterOpen] = useState(false)
   const [filter, setFilter] = useState('')
+  const [runtimePhaseFilter, setRuntimePhaseFilter] = useState<RuntimePhaseFilter | undefined>()
+  const [sourceFilter, setSourceFilter] = useState('all')
   const [showHidden, setShowHidden] = useState(true)
   const [taskEditor, setTaskEditor] = useState<TaskEditorState | undefined>()
   const [deleteTarget, setDeleteTarget] = useState<TaskIssue | undefined>()
@@ -188,13 +202,26 @@ export function DashboardSurface({
   const selectedRuntime = selectedKey === undefined ? undefined : runtimeMap.get(selectedKey)
   const columns = useMemo(() => (snapshot?.board.columns ?? []).map(column => ({
     ...column,
-    issues: deferredFilter === ''
-      ? column.issues
-      : column.issues.filter(issue => `${issue.identifier} ${issue.title} ${issue.labels.join(' ')}`.toLocaleLowerCase('en-US').includes(deferredFilter)),
-  })), [deferredFilter, snapshot])
+    issues: column.issues.filter((issue) => {
+      const matchesText = deferredFilter === ''
+        || `${issue.identifier} ${issue.title} ${issue.labels.join(' ')} ${issue.origin?.projectName ?? ''} ${issue.origin?.providerLabel ?? ''}`.toLocaleLowerCase('en-US').includes(deferredFilter)
+      const matchesRuntime = runtimePhaseFilter === undefined
+        || runtimeMap.get(issueKey(issue))?.phase === runtimePhaseFilter
+      return matchesText && matchesRuntime && matchesSource(issue.origin, sourceFilter)
+    }),
+  })), [deferredFilter, runtimeMap, runtimePhaseFilter, snapshot, sourceFilter])
   const visibleColumns = columns.filter(column => !column.hidden)
   const hiddenColumns = columns.filter(column => column.hidden)
   const context = snapshot?.context
+  const global = snapshot?.selection.mode === 'global'
+  const clearProjectScopedUi = (): void => {
+    setSelectedKey(undefined)
+    setTaskEditor(undefined)
+    setDeleteTarget(undefined)
+    setFilter('')
+    setRuntimePhaseFilter(undefined)
+    setSourceFilter('all')
+  }
   const startProjectScan = async (rootId: string): Promise<void> => {
     setCatalogDialog(undefined)
     setCatalogBusy(true)
@@ -224,36 +251,51 @@ export function DashboardSurface({
           <div className="dshd-header-top">
             <div className="dshd-heading-cluster">
               <h1>{t('common.dashboard')}</h1>
-              <button type="button" className="dshd-context" aria-label={t('shell.currentSourceAria')}>
-                <span>{providerLabel(context?.kind, context?.providerLabel ?? 'Linear', t)}</span>
-                <span aria-hidden>·</span>
-                <span>{context?.projectLabel ?? '—'}</span>
-                <ChevronIcon size={14} />
-              </button>
+              <ProjectContextSwitcher
+                context={context}
+                selection={snapshot?.selection}
+                projects={snapshot?.catalog.projects ?? []}
+                loading={loading}
+                onSwitchProject={onSwitchProject}
+                onSwitchGlobal={onSwitchGlobal}
+                onSwitched={clearProjectScopedUi}
+                onManageProjects={() => setTab('projects')}
+              />
             </div>
             <div className="dshd-toolbar">
-              <div className="dshd-filter-wrap">
-                <button type="button" className="dshd-plain-control" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}>
-                  <FilterIcon size={17} /><span>{t('shell.filter')}</span>
-                </button>
-                {filterOpen ? (
-                  <div className="dshd-filter-popover">
-                    <input autoFocus value={filter} onChange={event => setFilter(event.currentTarget.value)} placeholder={tab === 'projects' ? t('shell.filterProjects') : t('shell.filterIssues')} aria-label={tab === 'projects' ? t('shell.filterProjects') : t('shell.filterIssues')} />
-                    {filter !== '' ? <button type="button" onClick={() => setFilter('')}>{t('common.clear')}</button> : null}
+              {tab === 'configuration' ? null : (
+                <>
+                  {global && (tab === 'board' || tab === 'runtime') ? (
+                    <GlobalSourceFilter
+                      projects={snapshot?.catalog.projects ?? []}
+                      value={sourceFilter}
+                      onChange={(value) => { setSourceFilter(value); setSelectedKey(undefined) }}
+                    />
+                  ) : null}
+                  <div className="dshd-filter-wrap">
+                    <button type="button" className="dshd-plain-control" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}>
+                      <FilterIcon size={17} /><span>{t('shell.filter')}</span>
+                    </button>
+                    {filterOpen ? (
+                      <div className="dshd-filter-popover">
+                        <input autoFocus value={filter} onChange={event => setFilter(event.currentTarget.value)} placeholder={tab === 'projects' ? t('shell.filterProjects') : t('shell.filterIssues')} aria-label={tab === 'projects' ? t('shell.filterProjects') : t('shell.filterIssues')} />
+                        {filter !== '' ? <button type="button" onClick={() => setFilter('')}>{t('common.clear')}</button> : null}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
-              <button type="button" className="dshd-plain-control" data-active={!showHidden || undefined} onClick={() => setShowHidden(value => !value)}>
-                <DisplayIcon size={18} /><span>{t('shell.display')}</span>
-              </button>
-              <button type="button" className="dshd-live-control" aria-label={tab === 'projects' ? t('shell.dashboardModeAria') : t('shell.agentCapacityAria')}>
-                {tab === 'projects' ? <MonitorIcon size={17} /> : <span className="dshd-dot dshd-dot-green" />}
+                  <button type="button" className="dshd-plain-control" data-active={!showHidden || undefined} onClick={() => setShowHidden(value => !value)}>
+                    <DisplayIcon size={18} /><span>{t('shell.display')}</span>
+                  </button>
+                </>
+              )}
+              <button type="button" className="dshd-live-control" aria-label={tab === 'projects' || global ? t('shell.dashboardModeAria') : t('shell.agentCapacityAria')}>
+                {tab === 'projects' || global ? <MonitorIcon size={17} /> : <span className="dshd-dot dshd-dot-green" />}
                 <span>{tab === 'projects'
                   ? t('shell.currentWorkspace')
                   : `${snapshot?.paused ? t('shell.paused') : t('shell.live')} · ${t('shell.agents', { running: snapshot?.runtime.running ?? 0, capacity: snapshot?.runtime.capacity ?? 0 })}`}</span>
                 <ChevronIcon size={14} />
               </button>
-              <button
+              {global ? null : <button
                 type="button"
                 className="dshd-pause-control"
                 disabled={loading || snapshot === undefined}
@@ -261,7 +303,7 @@ export function DashboardSurface({
               >
                 {snapshot?.paused ? <PlayIcon size={15} /> : <PauseIcon size={15} />}
                 <span>{snapshot?.paused ? t('shell.resume') : t('shell.pause')}</span>
-              </button>
+              </button>}
             </div>
           </div>
           <nav className="dshd-tabs" aria-label={t('shell.viewsAria')}>
@@ -272,7 +314,19 @@ export function DashboardSurface({
           </nav>
         </header>
 
-        {tab === 'projects' ? null : <RuntimeRail snapshot={snapshot} loading={loading} onRefresh={onRefresh} />}
+        {tab !== 'board' && tab !== 'runtime' ? null : (
+          <RuntimeRail
+            snapshot={snapshot}
+            loading={loading}
+            phaseFilter={runtimePhaseFilter}
+            onPhaseFilterChange={(phase) => {
+              setRuntimePhaseFilter(phase)
+              setSelectedKey(undefined)
+              setTab('board')
+            }}
+            onRefresh={onRefresh}
+          />
+        )}
         <DashboardErrorNotice error={error} className="dshd-error" />
         {snapshot?.runtime.lastError !== undefined ? <div className="dshd-warning" role="status">{snapshot.runtime.lastError}</div> : null}
 
@@ -286,9 +340,10 @@ export function DashboardSurface({
               runtimeMap={runtimeMap}
               onSelect={setSelectedKey}
               onCreate={snapshot?.taskMutations.canCreate === true ? state => setTaskEditor({ mode: 'create', state }) : undefined}
+              emptyLabel={global ? t('board.globalEmpty') : t('board.empty')}
             />
           ) : null}
-          {tab === 'runtime' ? <RuntimeView snapshot={snapshot} onSelect={(key) => { setSelectedKey(key); setTab('board') }} /> : null}
+          {tab === 'runtime' ? <RuntimeView snapshot={snapshot} sourceFilter={sourceFilter} onSelect={(key) => { setSelectedKey(key); setTab('board') }} /> : null}
           {tab === 'projects' ? (
             <ProjectsView
               snapshot={snapshot}
@@ -317,6 +372,10 @@ export function DashboardSurface({
           onEdit={() => setTaskEditor({ mode: 'edit', issue: selectedIssue })}
           onDelete={() => setDeleteTarget(selectedIssue)}
           onOpenSession={onOpenSession}
+          onEnterProject={selectedIssue.origin === undefined ? undefined : async () => {
+            await onSwitchProject(selectedIssue.origin!.projectId)
+            clearProjectScopedUi()
+          }}
         />
       ) : null}
       {taskEditor !== undefined ? (
@@ -399,23 +458,313 @@ function harnessSidebarElement(): HTMLElement | undefined {
   return candidate instanceof HTMLElement ? candidate : undefined
 }
 
-function TabButton({ active, children, onClick }: { readonly active: boolean; readonly children: string; readonly onClick: () => void }) {
-  return <button type="button" aria-current={active ? 'page' : undefined} data-active={active || undefined} onClick={onClick}>{children}</button>
+function ProjectContextSwitcher({
+  context,
+  selection,
+  projects,
+  loading,
+  onSwitchProject,
+  onSwitchGlobal,
+  onSwitched,
+  onManageProjects,
+}: {
+  readonly context?: DashboardSnapshot['context'] | undefined
+  readonly selection?: DashboardSnapshot['selection'] | undefined
+  readonly projects: readonly ProjectView[]
+  readonly loading: boolean
+  readonly onSwitchProject: (projectId: string) => Promise<void>
+  readonly onSwitchGlobal: () => Promise<void>
+  readonly onSwitched: () => void
+  readonly onManageProjects: () => void
+}) {
+  const t = useDashboardTranslation()
+  const [open, setOpen] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [switchingProjectId, setSwitchingProjectId] = useState<string | undefined>()
+  const rootRef = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+  const normalizedFilter = filter.trim().toLocaleLowerCase('en-US')
+  const visibleProjects = useMemo(() => projects.filter((project) => {
+    if (normalizedFilter === '') return true
+    return [project.name, project.root, project.trackerKind, project.contextLabel]
+      .filter((value): value is string => value !== undefined)
+      .some(value => value.toLocaleLowerCase('en-US').includes(normalizedFilter))
+  }), [normalizedFilter, projects])
+  const globalVisible = normalizedFilter === ''
+    || `${t('context.globalLabel')} ${t('context.allProjects')}`.toLocaleLowerCase('en-US').includes(normalizedFilter)
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
+        setOpen(false)
+        setFilter('')
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      setOpen(false)
+      setFilter('')
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [open])
+
+  const chooseProject = async (project: ProjectView): Promise<void> => {
+    if (project.currentWorkspace || switchingProjectId !== undefined) return
+    setSwitchingProjectId(project.id)
+    try {
+      await onSwitchProject(project.id)
+      setOpen(false)
+      setFilter('')
+      onSwitched()
+    } catch {
+      // The shared controller keeps the trusted Host error visible above the view.
+    } finally {
+      setSwitchingProjectId(undefined)
+    }
+  }
+
+  const chooseGlobal = async (): Promise<void> => {
+    if (selection?.mode === 'global' || switchingProjectId !== undefined || projects.length === 0) return
+    setSwitchingProjectId('global')
+    try {
+      await onSwitchGlobal()
+      setOpen(false)
+      setFilter('')
+      onSwitched()
+    } catch {
+      // The shared controller keeps the trusted Host error visible above the view.
+    } finally {
+      setSwitchingProjectId(undefined)
+    }
+  }
+
+  const global = selection?.mode === 'global'
+  const currentProvider = global
+    ? t('context.globalLabel')
+    : providerLabel(context?.kind, context?.providerLabel ?? 'Linear', t) ?? t('context.unavailable')
+  return (
+    <div className="dshd-context-wrap" ref={rootRef}>
+      <button
+        type="button"
+        className="dshd-context"
+        data-open={open || undefined}
+        aria-label={t('shell.currentSourceAria')}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => setOpen(value => !value)}
+      >
+        <span>{currentProvider}</span>
+        <span aria-hidden>·</span>
+        <span>{global ? t('context.allProjects') : context?.projectLabel ?? '—'}</span>
+        <ChevronIcon size={14} />
+      </button>
+      {open ? (
+        <section id={menuId} className="dshd-context-popover" role="dialog" aria-label={t('context.switcherAria')}>
+          <header>
+            <strong>{t('context.title')}</strong>
+            <span>{t('context.description')}</span>
+          </header>
+          <label className="dshd-context-search">
+            <SearchIcon size={16} />
+            <input
+              autoFocus
+              value={filter}
+              onChange={event => setFilter(event.currentTarget.value)}
+              placeholder={t('context.searchPlaceholder')}
+              aria-label={t('context.searchAria')}
+            />
+            {filter === '' ? null : (
+              <button type="button" aria-label={t('context.clearSearchAria')} onClick={() => setFilter('')}>
+                <CloseIcon size={14} />
+              </button>
+            )}
+          </label>
+          <div className="dshd-context-list" role="listbox" aria-label={t('context.projectsAria')}>
+            {globalVisible ? (
+              <button
+                type="button"
+                className="dshd-context-option dshd-context-option-global"
+                role="option"
+                aria-selected={global}
+                data-current={global || undefined}
+                disabled={loading || switchingProjectId !== undefined || global || projects.length === 0}
+                onClick={() => { void chooseGlobal() }}
+              >
+                <span className="dshd-context-option-main">
+                  <span className="dshd-context-option-title">
+                    <strong>{t('context.allProjects')}</strong>
+                    {global ? <span className="dshd-context-current">{t('context.current')}</span> : null}
+                    {switchingProjectId === 'global' ? <span className="dshd-context-switching">{t('context.switching')}</span> : null}
+                  </span>
+                  <span className="dshd-context-option-meta">{t('context.globalDescription')}</span>
+                  <span className="dshd-context-option-path">{t('context.globalReady', { ready: projects.filter(project => project.configurationState === 'ready').length, total: projects.length })}</span>
+                </span>
+                <span className="dshd-context-option-check" aria-hidden>{global ? <CheckIcon size={17} /> : null}</span>
+              </button>
+            ) : null}
+            {visibleProjects.map((project) => {
+              const projectProvider = providerLabel(project.trackerKind, project.trackerKind, t) ?? t('context.unavailable')
+              const busy = switchingProjectId === project.id
+              return (
+                <button
+                  type="button"
+                  className="dshd-context-option"
+                  key={project.id}
+                  role="option"
+                  aria-selected={project.currentWorkspace}
+                  data-current={project.currentWorkspace || undefined}
+                  data-invalid={project.configurationState === 'invalid' || undefined}
+                  disabled={loading || switchingProjectId !== undefined || project.currentWorkspace}
+                  onClick={() => { void chooseProject(project) }}
+                >
+                  <span className="dshd-context-option-main">
+                    <span className="dshd-context-option-title">
+                      <strong>{project.name}</strong>
+                      {project.currentWorkspace ? <span className="dshd-context-current">{t('context.current')}</span> : null}
+                      {busy ? <span className="dshd-context-switching">{t('context.switching')}</span> : null}
+                    </span>
+                    <span className="dshd-context-option-meta">
+                      {projectProvider}
+                      {project.contextLabel === undefined ? null : <><span aria-hidden>·</span>{project.contextLabel}</>}
+                    </span>
+                    <span className="dshd-context-option-path" title={project.root}>{project.root}</span>
+                    {project.configurationState === 'invalid' ? (
+                      <span className="dshd-context-invalid" title={project.configurationError}>
+                        {t('context.invalidConfiguration')}
+                      </span>
+                    ) : null}
+                    {(project.runningAgents ?? 0) + (project.retryingAgents ?? 0) > 0 ? (
+                      <span className="dshd-context-activity">
+                        {project.runningAgents === undefined || project.runningAgents === 0
+                          ? null
+                          : t('context.runningAgents', { count: project.runningAgents })}
+                        {project.retryingAgents === undefined || project.retryingAgents === 0
+                          ? null
+                          : t('context.retryingAgents', { count: project.retryingAgents })}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="dshd-context-option-check" aria-hidden>
+                    {project.currentWorkspace ? <CheckIcon size={17} /> : null}
+                  </span>
+                </button>
+              )
+            })}
+            {visibleProjects.length === 0 && !globalVisible ? <p className="dshd-context-empty">{t('context.noResults')}</p> : null}
+          </div>
+          <footer>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                setFilter('')
+                onManageProjects()
+              }}
+            >
+              <FolderIcon size={16} />
+              <span>{t('context.manageProjects')}</span>
+            </button>
+          </footer>
+        </section>
+      ) : null}
+    </div>
+  )
 }
 
-function RuntimeRail({ snapshot, loading, onRefresh }: {
+function TabButton({ active, children, onClick }: { readonly active: boolean; readonly children: string; readonly onClick: () => void }) {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  useLayoutEffect(() => {
+    if (!active) return
+    const revealActiveTab = () => {
+      const button = buttonRef.current
+      const tabs = button?.parentElement
+      if (!button || !tabs) return
+      const visibleLeft = tabs.scrollLeft
+      const visibleRight = visibleLeft + tabs.clientWidth
+      const buttonLeft = button.offsetLeft
+      const buttonRight = buttonLeft + button.offsetWidth
+      if (buttonLeft < visibleLeft) tabs.scrollLeft = Math.max(0, buttonLeft - 16)
+      else if (buttonRight > visibleRight) tabs.scrollLeft = buttonRight - tabs.clientWidth + 16
+    }
+    revealActiveTab()
+    window.addEventListener('resize', revealActiveTab)
+    return () => window.removeEventListener('resize', revealActiveTab)
+  }, [active])
+  return <button ref={buttonRef} type="button" aria-current={active ? 'page' : undefined} data-active={active || undefined} onClick={onClick}>{children}</button>
+}
+
+function GlobalSourceFilter({ projects, value, onChange }: {
+  readonly projects: readonly ProjectView[]
+  readonly value: string
+  readonly onChange: (value: string) => void
+}) {
+  const t = useDashboardTranslation()
+  const providers = useMemo(() => [...new Set(projects
+    .map(project => project.trackerKind)
+    .filter((kind): kind is string => kind !== undefined))]
+    .toSorted((left, right) => left.localeCompare(right, 'en-US')), [projects])
+  return (
+    <label className="dshd-source-filter">
+      <FilterIcon size={15} />
+      <select value={value} aria-label={t('shell.sourceFilterAria')} onChange={event => onChange(event.currentTarget.value)}>
+        <option value="all">{t('shell.allSources')}</option>
+        {providers.length === 0 ? null : <optgroup label={t('shell.providers')}>
+          {providers.map(kind => <option key={kind} value={`provider:${kind}`}>{providerLabel(kind, kind, t)}</option>)}
+        </optgroup>}
+        <optgroup label={t('shell.projects')}>
+          {projects.map(project => <option key={project.id} value={`project:${project.id}`}>{project.name}</option>)}
+        </optgroup>
+      </select>
+      <ChevronIcon size={12} />
+    </label>
+  )
+}
+
+function RuntimeRail({ snapshot, loading, phaseFilter, onPhaseFilterChange, onRefresh }: {
   readonly snapshot?: DashboardSnapshot | undefined
   readonly loading: boolean
+  readonly phaseFilter?: RuntimePhaseFilter | undefined
+  readonly onPhaseFilterChange: (phase: RuntimePhaseFilter | undefined) => void
   readonly onRefresh: () => Promise<void>
 }) {
   const t = useDashboardTranslation()
   return (
-    <div className="dshd-runtime-rail">
-      <Metric dot="green" label={t('runtime.running')} value={snapshot?.runtime.running ?? 0} />
+    <div className="dshd-runtime-rail" role="toolbar" aria-label={t('runtime.filtersAria')}>
+      <RuntimeFilterMetric
+        phase="running"
+        dot="green"
+        label={t('runtime.running')}
+        value={snapshot?.runtime.running ?? 0}
+        active={phaseFilter === 'running'}
+        onToggle={onPhaseFilterChange}
+      />
       <span className="dshd-divider" />
-      <Metric dot="amber" label={t('runtime.retrying')} value={snapshot?.runtime.retrying ?? 0} />
+      <RuntimeFilterMetric
+        phase="retrying"
+        dot="amber"
+        label={t('runtime.retrying')}
+        value={snapshot?.runtime.retrying ?? 0}
+        active={phaseFilter === 'retrying'}
+        onToggle={onPhaseFilterChange}
+      />
       <span className="dshd-divider" />
-      <Metric dot="red" label={t('runtime.blocked')} value={snapshot?.runtime.blocked ?? 0} />
+      <RuntimeFilterMetric
+        phase="blocked"
+        dot="red"
+        label={t('runtime.blocked')}
+        value={snapshot?.runtime.blocked ?? 0}
+        active={phaseFilter === 'blocked'}
+        onToggle={onPhaseFilterChange}
+      />
       <span className="dshd-divider" />
       <span>{t('runtime.tokens')}&nbsp;&nbsp;{compactNumber(snapshot?.runtime.tokens.total ?? 0, t)}</span>
       <span className="dshd-divider" />
@@ -427,11 +776,46 @@ function RuntimeRail({ snapshot, loading, onRefresh }: {
   )
 }
 
-function Metric({ dot, label, value }: { readonly dot: 'green' | 'amber' | 'red' | 'gray'; readonly label: string; readonly value?: number | undefined }) {
-  return <span className="dshd-metric"><span className={`dshd-dot dshd-dot-${dot}`} />{label}{value === undefined ? null : <>&nbsp;&nbsp;{value}</>}</span>
+function RuntimeFilterMetric({ phase, dot, label, value, active, onToggle }: {
+  readonly phase: RuntimePhaseFilter
+  readonly dot: 'green' | 'amber' | 'red'
+  readonly label: string
+  readonly value: number
+  readonly active: boolean
+  readonly onToggle: (phase: RuntimePhaseFilter | undefined) => void
+}) {
+  const t = useDashboardTranslation()
+  const actionLabel = t(active ? 'runtime.clearPhaseFilterAria' : 'runtime.filterByPhaseAria', { phase: label })
+  return (
+    <button
+      type="button"
+      className="dshd-metric dshd-metric-filter"
+      data-active={active || undefined}
+      aria-pressed={active}
+      aria-label={actionLabel}
+      title={actionLabel}
+      onClick={() => onToggle(active ? undefined : phase)}
+    >
+      <span className={`dshd-dot dshd-dot-${dot}`} />
+      <span>{label}&nbsp;&nbsp;{value}</span>
+    </button>
+  )
 }
 
-function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap, onSelect, onCreate }: {
+function Metric({ dot, label, value }: {
+  readonly dot: 'green' | 'amber' | 'red' | 'gray'
+  readonly label: string
+  readonly value?: number | undefined
+}) {
+  return (
+    <span className="dshd-metric">
+      <span className={`dshd-dot dshd-dot-${dot}`} />
+      {label}{value === undefined ? null : <>&nbsp;&nbsp;{value}</>}
+    </span>
+  )
+}
+
+function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap, onSelect, onCreate, emptyLabel }: {
   readonly columns: readonly BoardColumn[]
   readonly hiddenColumns: readonly BoardColumn[]
   readonly showHidden: boolean
@@ -439,8 +823,8 @@ function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap
   readonly runtimeMap: ReadonlyMap<string, IssueRuntimeView>
   readonly onSelect: (key: string) => void
   readonly onCreate: ((state: string) => void) | undefined
+  readonly emptyLabel: string
 }) {
-  const t = useDashboardTranslation()
   return (
     <div className="dshd-board">
       <div className="dshd-columns">
@@ -448,7 +832,7 @@ function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap
           <IssueColumn key={column.name} column={column} selectedKey={selectedKey} runtimeMap={runtimeMap} onSelect={onSelect} onCreate={onCreate} />
         ))}
         {showHidden && hiddenColumns.length > 0 ? <HiddenColumns columns={hiddenColumns} /> : null}
-        {columns.length === 0 ? <div className="dshd-empty">{t('board.empty')}</div> : null}
+        {columns.length === 0 || columns.every(column => column.issues.length === 0) ? <div className="dshd-empty">{emptyLabel}</div> : null}
       </div>
     </div>
   )
@@ -468,7 +852,6 @@ const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap,
         <span className="dshd-state-ring" style={{ '--dshd-state': stateColor(column.name, column.type, column.color) } as React.CSSProperties} />
         <strong>{column.name}</strong>
         <span>{column.issues.length}</span>
-        <span className="dshd-column-more"><MoreIcon size={18} /></span>
         {onCreate === undefined ? null : (
           <button type="button" className="dshd-column-add" aria-label={t('board.addTaskAria', { state: column.name })} onClick={() => onCreate(column.name)}>
             <PlusIcon size={17} />
@@ -505,6 +888,11 @@ const IssueCard = memo(function IssueCard({ issue, runtime, selected, onSelect }
           <span className="dshd-priority-ring" data-priority={priorityTone(issue.priority)} />
           <span>{issue.identifier}</span>
         </div>
+        {issue.origin === undefined ? null : (
+          <span className="dshd-card-origin" title={`${issue.origin.projectName} · ${issue.origin.providerLabel}`}>
+            {issue.origin.providerLabel}<span aria-hidden>·</span>{issue.origin.projectName}
+          </span>
+        )}
         <strong>{issue.title}</strong>
         <span className="dshd-updated">{t('board.updated', { time: relativeTime(issue.updatedAt, t) })}</span>
       </div>
@@ -525,20 +913,38 @@ const IssueCard = memo(function IssueCard({ issue, runtime, selected, onSelect }
 
 function HiddenColumns({ columns }: { readonly columns: readonly BoardColumn[] }) {
   const t = useDashboardTranslation()
+  const [expanded, setExpanded] = useState(true)
+  const listId = useId()
+  const toggleLabel = t(expanded ? 'board.collapseHiddenColumnsAria' : 'board.expandHiddenColumnsAria')
   return (
-    <aside className="dshd-hidden-columns">
-      <header><ChevronIcon size={14} /><strong>{t('board.hiddenColumns')}</strong></header>
-      {columns.map(column => (
-        <div key={column.name}>
-          <span className="dshd-state-ring" style={{ '--dshd-state': stateColor(column.name, column.type, column.color) } as React.CSSProperties} />
-          <span>{column.name}</span><span>{column.issues.length}</span>
-        </div>
-      ))}
+    <aside className="dshd-hidden-columns" data-collapsed={!expanded || undefined}>
+      <header>
+        <button
+          type="button"
+          className="dshd-hidden-columns-toggle"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          aria-label={toggleLabel}
+          title={toggleLabel}
+          onClick={() => setExpanded(value => !value)}
+        >
+          <ChevronIcon size={14} />
+          <strong>{t('board.hiddenColumns')}</strong>
+        </button>
+      </header>
+      <div id={listId} className="dshd-hidden-column-list" hidden={!expanded}>
+        {columns.map(column => (
+          <div className="dshd-hidden-column-row" key={column.name}>
+            <span className="dshd-state-ring" style={{ '--dshd-state': stateColor(column.name, column.type, column.color) } as React.CSSProperties} />
+            <span>{column.name}</span><span>{column.issues.length}</span>
+          </div>
+        ))}
+      </div>
     </aside>
   )
 }
 
-function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate, canDelete, onEdit, onDelete, onOpenSession }: {
+function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate, canDelete, onEdit, onDelete, onOpenSession, onEnterProject }: {
   readonly issue: TaskIssue
   readonly runtime?: IssueRuntimeView | undefined
   readonly onClose: () => void
@@ -549,6 +955,7 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate,
   readonly onEdit: () => void
   readonly onDelete: () => void
   readonly onOpenSession: (sessionId: string) => void
+  readonly onEnterProject?: (() => Promise<void>) | undefined
 }) {
   const t = useDashboardTranslation()
   const [copied, setCopied] = useState(false)
@@ -575,6 +982,13 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate,
         <span className="dshd-divider" />
         <span className="dshd-state-inline"><span className="dshd-state-ring" style={{ '--dshd-state': stateColor(issue.state.name, issue.state.type, issue.state.color) } as React.CSSProperties} />{issue.state.name}</span>
       </div>
+      {issue.origin === undefined ? null : (
+        <InspectorSection title={t('inspector.source')}>
+          <InspectorRow label={t('inspector.project')}><span>{issue.origin.projectName}</span></InspectorRow>
+          <InspectorRow label={t('inspector.provider')}><span>{issue.origin.providerLabel} · {issue.origin.contextLabel}</span></InspectorRow>
+          <InspectorRow label={t('inspector.rawState')}><span>{issue.state.name}</span></InspectorRow>
+        </InspectorSection>
+      )}
       <InspectorSection title={t('inspector.runtime')}>
         <InspectorRow label={t('inspector.session')}>
           <span className="dshd-mono dshd-ellipsis">{runtime?.sessionId ?? '—'}</span>
@@ -613,7 +1027,9 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate,
         </div>
       </InspectorSection>
       <footer className="dshd-inspector-actions">
-        <button type="button" className="dshd-danger" disabled={runtime?.phase !== 'running'} onClick={() => { void onStop(issueKey(issue)) }}><StopIcon size={14} />{t('inspector.stopAgent')}</button>
+        {onEnterProject === undefined
+          ? <button type="button" className="dshd-danger" disabled={runtime?.phase !== 'running'} onClick={() => { void onStop(issueKey(issue)) }}><StopIcon size={14} />{t('inspector.stopAgent')}</button>
+          : <button type="button" className="dshd-primary" onClick={() => { void onEnterProject().catch(() => undefined) }}><ExternalIcon size={14} />{t('inspector.enterProject')}</button>}
         <button type="button" onClick={() => { void onRefresh() }}><RefreshIcon size={16} />{t('inspector.refreshIssue')}</button>
       </footer>
     </aside>
@@ -760,9 +1176,13 @@ function TokenCell({ label, value }: { readonly label: string; readonly value: n
   return <div><span>{label}</span><strong>{value.toLocaleString(t('meta.locale'))}</strong></div>
 }
 
-function RuntimeView({ snapshot, onSelect }: { readonly snapshot?: DashboardSnapshot | undefined; readonly onSelect: (key: string) => void }) {
+function RuntimeView({ snapshot, sourceFilter, onSelect }: {
+  readonly snapshot?: DashboardSnapshot | undefined
+  readonly sourceFilter: string
+  readonly onSelect: (key: string) => void
+}) {
   const t = useDashboardTranslation()
-  const rows = snapshot?.runtime.issues ?? []
+  const rows = (snapshot?.runtime.issues ?? []).filter(row => matchesSource(row.origin, sourceFilter))
   return (
     <div className="dshd-table-view">
       <header><h2>{t('runtime.title')}</h2><p>{t('runtime.description')}</p></header>
@@ -770,7 +1190,7 @@ function RuntimeView({ snapshot, onSelect }: { readonly snapshot?: DashboardSnap
         <div className="dshd-table-head" role="row"><span>{t('runtime.issue')}</span><span>{t('runtime.phase')}</span><span>{t('runtime.state')}</span><span>{t('runtime.turns')}</span><span>{t('runtime.tokens')}</span><span>{t('runtime.updated')}</span></div>
         {rows.map(row => (
           <button type="button" role="row" key={row.key} onClick={() => onSelect(row.key)}>
-            <strong>{row.identifier}</strong>
+            <strong>{row.identifier}{row.origin === undefined ? null : <small>{row.origin.providerLabel} · {row.origin.projectName}</small>}</strong>
             <span><span className={`dshd-dot dshd-dot-${row.phase === 'running' ? 'green' : row.phase === 'retrying' ? 'amber' : 'red'}`} />{runtimePhaseLabel(row.phase, t)}</span>
             <span>{row.state}</span><span>{row.turnCount}</span><span>{compactNumber(row.tokens.total, t)}</span><span>{relativeTime(row.updatedAt, t)}</span>
           </button>
@@ -1018,48 +1438,204 @@ function ProjectScanDialog({ result, onClose, onRegister }: {
 
 function ConfigurationView({ snapshot }: { readonly snapshot?: DashboardSnapshot | undefined }) {
   const t = useDashboardTranslation()
+  if (snapshot?.selection.mode === 'global') {
+    const ready = snapshot.selection.readyProjectCount
+    const total = snapshot.selection.projectCount
+    const tone = ready === total && total > 0 ? 'success' : 'warning'
+    return (
+      <div className="dshd-config-view">
+        <header className="dshd-config-heading">
+          <div><h2>{t('configuration.globalTitle')}</h2><p>{t('configuration.globalDescription')}</p></div>
+          <span className="dshd-config-status-badge" data-tone={tone}><span className="dshd-config-status-dot" />{t('configuration.globalStatus')}</span>
+        </header>
+        <div className="dshd-config-status" data-tone={tone} role="status">
+          <span className="dshd-config-status-dot" />
+          <div><strong>{t('configuration.globalReadyCount', { ready, total })}</strong><p>{t('configuration.globalScope')}</p></div>
+        </div>
+        <div className="dshd-config-grid">
+          <ConfigSection title={t('configuration.globalProjects')} wide>
+            {snapshot.catalog.projects.map(project => (
+              <ConfigRow
+                key={project.id}
+                label={project.name}
+                value={`${providerLabel(project.trackerKind, project.trackerKind, t) ?? t('context.unavailable')} · ${project.contextLabel ?? '—'}`}
+                secondary={project.configurationState === 'invalid' ? project.configurationError ?? t('context.invalidConfiguration') : project.root}
+                mono={project.configurationState === 'invalid'}
+              />
+            ))}
+          </ConfigSection>
+        </div>
+      </div>
+    )
+  }
   const config = snapshot?.configuration
+  const hasReloadError = config?.workflowError !== undefined
+  const statusTone = config === undefined ? 'neutral' : hasReloadError ? 'warning' : 'success'
+  const statusLabel = config === undefined
+    ? t('configuration.statusWaitingShort')
+    : hasReloadError ? t('configuration.statusErrorShort') : t('configuration.statusLoadedShort')
+  const statusTitle = config === undefined
+    ? t('configuration.statusWaiting')
+    : hasReloadError ? t('configuration.statusLastGood') : t('configuration.statusCurrent')
+  const loadedSummary = config?.workflowLoadedAt === undefined
+    ? t('configuration.noValidConfiguration')
+    : t('configuration.lastGoodLoaded', {
+        absolute: absoluteTime(config.workflowLoadedAt, t),
+        relative: relativeTime(config.workflowLoadedAt, t),
+      })
   return (
     <div className="dshd-config-view">
-      <header><h2>{t('tab.configuration')}</h2><p>{t('configuration.description')}</p></header>
-      <section>
-        <h3>{t('configuration.workflow')}</h3>
-        <ConfigRow label={t('configuration.path')} value={config?.workflowPath} mono />
-        <ConfigRow label={t('configuration.project')} value={config?.projectName} />
-        <ConfigRow label={t('configuration.loaded')} value={relativeTime(config?.workflowLoadedAt, t)} />
-        <ConfigRow label={t('configuration.polling')} value={config?.pollingIntervalMs === undefined ? '—' : `${config.pollingIntervalMs.toLocaleString(t('meta.locale'))} ms`} />
-        <ConfigRow label={t('configuration.workspaceRoot')} value={config?.workspaceRoot} mono />
-        {config?.workflowError !== undefined ? <div className="dshd-config-error">{t('configuration.reloadRejected', { error: config.workflowError })}</div> : null}
-      </section>
-      <section>
-        <h3>{t('configuration.tracker')}</h3>
-        <ConfigRow label={t('configuration.provider')} value={providerLabel(config?.trackerKind, config?.trackerKind, t)} />
-        <ConfigRow label={t('configuration.project')} value={config?.projectRef} mono />
-        {(config?.credentials.length ?? 0) === 0 ? <ConfigRow label={t('configuration.credentials')} value={t('configuration.notRequired')} /> : config?.credentials.map(credential => (
+      <header className="dshd-config-heading">
+        <div><h2>{t('tab.configuration')}</h2><p>{t('configuration.description')}</p></div>
+        <span className="dshd-config-status-badge" data-tone={statusTone}>
+          <span className="dshd-config-status-dot" />
+          {statusLabel}
+        </span>
+      </header>
+
+      <div className="dshd-config-status" data-tone={statusTone} role="status">
+        <span className="dshd-config-status-dot" />
+        <div>
+          <strong>{statusTitle}</strong>
+          <p>{loadedSummary}</p>
+          {config === undefined ? null : <p>{t('configuration.autoReloadScope')}</p>}
+          {config?.workflowError === undefined ? null : <code>{config.workflowError}</code>}
+        </div>
+      </div>
+
+      <div className="dshd-config-grid">
+        <ConfigSection title={t('configuration.workflow')} wide>
           <ConfigRow
-            key={credential.ref}
-            label={credentialLabel(credential.label, t)}
-            value={`${credential.ref} · ${credential.configured ? t('configuration.configured', { source: credentialSourceLabel(credential.source, t) }) : t('configuration.notConfigured')}`}
+            label={t('configuration.source')}
+            value={config?.workflowPath}
             mono
+            copyValue={config?.workflowPath}
+            copyLabel={t('configuration.copyWorkflowPath')}
           />
-        ))}
-        <ConfigRow label={t('configuration.activeStates')} value={config?.activeStates.join(', ')} />
-        <ConfigRow label={t('configuration.terminalStates')} value={config?.terminalStates.join(', ')} />
-      </section>
-      <section>
-        <h3>{t('configuration.harnessAgent')}</h3>
-        <ConfigRow label={t('configuration.profile')} value={config?.agentProfile} mono />
-        <ConfigRow label={t('configuration.permissionPreset')} value={config?.permissionPreset} mono />
-        <ConfigRow label={t('configuration.agentPreset')} value={config?.agentPreset ?? t('configuration.harnessDefault')} mono />
-        <ConfigRow label={t('configuration.concurrency')} value={config?.maxConcurrentAgents?.toString()} />
-        <ConfigRow label={t('configuration.maximumTurns')} value={config?.maxTurns?.toString()} />
-      </section>
+          <ConfigRow label={t('configuration.project')} value={config?.projectName} />
+          <ConfigRow
+            label={t('configuration.loaded')}
+            value={config?.workflowLoadedAt === undefined ? undefined : absoluteTime(config.workflowLoadedAt, t)}
+            secondary={config?.workflowLoadedAt === undefined ? undefined : relativeTime(config.workflowLoadedAt, t)}
+          />
+          <ConfigRow label={t('configuration.polling')} value={formatPollingInterval(config?.pollingIntervalMs, t)} />
+          <ConfigRow
+            label={t('configuration.workspaceRoot')}
+            value={config?.workspaceRoot}
+            mono
+            copyValue={config?.workspaceRoot}
+            copyLabel={t('configuration.copyWorkspaceRoot')}
+          />
+          <ConfigRow label={t('configuration.appliesTo')} value={t('configuration.futureScope')} />
+        </ConfigSection>
+
+        <ConfigSection title={t('configuration.tracker')}>
+          <ConfigRow label={t('configuration.provider')} value={providerLabel(config?.trackerKind, config?.trackerKind, t)} />
+          <ConfigRow label={t('configuration.project')} value={config?.projectRef} mono />
+          {(config?.credentials.length ?? 0) === 0 ? <ConfigRow label={t('configuration.credentials')} value={t('configuration.notRequired')} /> : config?.credentials.map(credential => (
+            <ConfigRow
+              key={credential.ref}
+              label={credentialLabel(credential.label, t)}
+              value={`${credential.ref} · ${credential.configured ? t('configuration.configured', { source: credentialSourceLabel(credential.source, t) }) : t('configuration.notConfigured')}`}
+              mono
+            />
+          ))}
+          <ConfigStateRow label={t('configuration.activeStates')} values={config?.activeStates ?? []} tone="active" />
+          <ConfigStateRow label={t('configuration.terminalStates')} values={config?.terminalStates ?? []} tone="terminal" />
+        </ConfigSection>
+
+        <ConfigSection title={t('configuration.harnessAgent')}>
+          <ConfigRow label={t('configuration.profile')} value={config?.agentProfile} mono />
+          <ConfigRow label={t('configuration.permissionPreset')} value={config?.permissionPreset} mono />
+          <ConfigRow label={t('configuration.agentPreset')} value={config?.agentPreset ?? t('configuration.harnessDefault')} mono />
+          <ConfigRow
+            label={t('configuration.concurrency')}
+            value={config?.maxConcurrentAgents?.toString()}
+            secondary={t('configuration.concurrencyHelp')}
+          />
+          <ConfigRow
+            label={t('configuration.maximumTurns')}
+            value={config?.maxTurns?.toString()}
+            secondary={t('configuration.maximumTurnsHelp')}
+          />
+        </ConfigSection>
+      </div>
     </div>
   )
 }
 
-function ConfigRow({ label, value, mono = false }: { readonly label: string; readonly value?: string | undefined; readonly mono?: boolean | undefined }) {
-  return <div className="dshd-config-row"><span>{label}</span><strong className={mono ? 'dshd-mono' : undefined}>{value === undefined || value === '' ? '—' : value}</strong></div>
+function ConfigSection({ title, wide = false, children }: {
+  readonly title: string
+  readonly wide?: boolean | undefined
+  readonly children: ReactNode
+}) {
+  const headingId = useId()
+  return (
+    <section className="dshd-config-section" data-wide={wide || undefined} aria-labelledby={headingId}>
+      <header><h3 id={headingId}>{title}</h3></header>
+      <dl>{children}</dl>
+    </section>
+  )
+}
+
+function ConfigRow({ label, value, secondary, mono = false, copyValue, copyLabel }: {
+  readonly label: string
+  readonly value?: ReactNode
+  readonly secondary?: string | undefined
+  readonly mono?: boolean | undefined
+  readonly copyValue?: string | undefined
+  readonly copyLabel?: string | undefined
+}) {
+  const t = useDashboardTranslation()
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1200)
+    return () => clearTimeout(timer)
+  }, [copied])
+  const empty = value === undefined || value === ''
+  const actionLabel = copied ? t('configuration.copied') : copyLabel
+  const copy = async (): Promise<void> => {
+    if (copyValue === undefined || navigator.clipboard === undefined) return
+    await navigator.clipboard.writeText(copyValue)
+    setCopied(true)
+  }
+  return (
+    <div className="dshd-config-row">
+      <dt>{label}</dt>
+      <dd>
+        <div className="dshd-config-value-line">
+          <span className={mono ? 'dshd-mono' : undefined}>{empty ? '—' : value}</span>
+          {copyValue === undefined || copyLabel === undefined ? null : (
+            <button type="button" className="dshd-config-copy" aria-label={actionLabel} title={actionLabel} onClick={() => { void copy() }}>
+              <CopyIcon size={15} />
+              <span>{copied ? t('configuration.copied') : t('configuration.copy')}</span>
+            </button>
+          )}
+        </div>
+        {secondary === undefined ? null : <small>{secondary}</small>}
+      </dd>
+    </div>
+  )
+}
+
+function ConfigStateRow({ label, values, tone }: {
+  readonly label: string
+  readonly values: readonly string[]
+  readonly tone: 'active' | 'terminal'
+}) {
+  return (
+    <div className="dshd-config-row">
+      <dt>{label}</dt>
+      <dd>
+        {values.length === 0 ? <span>—</span> : (
+          <ul className="dshd-config-tags" aria-label={label}>
+            {values.map(value => <li key={value} data-tone={tone}>{value}</li>)}
+          </ul>
+        )}
+      </dd>
+    </div>
+  )
 }
 
 function runtimeLabel(runtime: IssueRuntimeView | undefined, t: ReturnType<typeof useDashboardTranslation>): string {
@@ -1070,6 +1646,14 @@ function runtimePhaseLabel(phase: IssueRuntimeView['phase'], t: ReturnType<typeo
   if (phase === 'running') return t('runtime.running')
   if (phase === 'retrying') return t('runtime.retrying')
   return t('runtime.blocked')
+}
+
+function matchesSource(origin: TaskIssueOrigin | undefined, filter: string): boolean {
+  if (filter === 'all') return true
+  if (origin === undefined) return false
+  if (filter.startsWith('provider:')) return origin.providerKind === filter.slice('provider:'.length)
+  if (filter.startsWith('project:')) return origin.projectId === filter.slice('project:'.length)
+  return false
 }
 
 function stateColor(name: string, type?: string, providerColor?: string): string {
@@ -1112,6 +1696,23 @@ function relativeTime(value: string | undefined, t: ReturnType<typeof useDashboa
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return formatter.format(-hours, 'hour')
   return formatter.format(-Math.floor(hours / 24), 'day')
+}
+
+function absoluteTime(value: string, t: ReturnType<typeof useDashboardTranslation>): string {
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return '—'
+  return new Intl.DateTimeFormat(t('meta.locale'), {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  }).format(date)
+}
+
+function formatPollingInterval(value: number | undefined, t: ReturnType<typeof useDashboardTranslation>): string | undefined {
+  if (value === undefined) return undefined
+  const milliseconds = value.toLocaleString(t('meta.locale'))
+  if (value < 1_000 || value % 1_000 !== 0) return `${milliseconds} ms`
+  const seconds = (value / 1_000).toLocaleString(t('meta.locale'))
+  return t('configuration.pollingSeconds', { seconds, milliseconds })
 }
 
 function elapsed(startedAt?: string): string {

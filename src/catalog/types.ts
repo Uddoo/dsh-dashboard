@@ -3,6 +3,7 @@
 export type ProjectId = string
 export type RepositoryId = string
 export type DiscoveryRootId = string
+export type CatalogSettingId = 'active-project'
 
 export type WorkspaceStrategy = 'worktree' | 'controlled-directory'
 export type ProjectRegistrationSource = 'current-workspace' | 'manual' | 'discovery'
@@ -52,11 +53,33 @@ export interface DiscoveryRootRecord {
   readonly updatedAt: string
 }
 
+export type ActiveProjectRecord =
+  | {
+      /** Legacy records omitted `mode`; keep reading them during development upgrades. */
+      readonly mode?: 'project'
+      readonly projectId: ProjectId
+      readonly updatedAt: string
+    }
+  | {
+      readonly mode: 'global'
+      readonly updatedAt: string
+    }
+
+export type ProjectCatalogSelection =
+  | { readonly mode: 'project'; readonly projectId: ProjectId }
+  | { readonly mode: 'global' }
+
 export interface RepositoryView extends RepositoryRecord {}
 
 export interface ProjectView extends ProjectRecord {
   readonly repositories: readonly RepositoryView[]
   readonly currentWorkspace: boolean
+  readonly trackerKind?: string
+  readonly contextLabel?: string
+  readonly configurationState?: 'ready' | 'invalid'
+  readonly configurationError?: string
+  readonly runningAgents?: number
+  readonly retryingAgents?: number
 }
 
 export interface ProjectCatalogView {

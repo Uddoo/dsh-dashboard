@@ -103,6 +103,7 @@ function renderDashboard(overrides: Partial<ComponentProps<typeof DashboardSurfa
       onCreateTask={async () => {}}
       onUpdateTask={async () => {}}
       onDeleteTask={async () => {}}
+      onSwitchProject={async () => {}}
       onAddDiscoveryRoot={async () => {}}
       onRemoveDiscoveryRoot={async () => {}}
       onScanProjects={async () => ({ root: fixtureSnapshot.catalog.discoveryRoots[0]!, candidates: [], truncated: false })}

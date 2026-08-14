@@ -1,14 +1,12 @@
 /** Trusted-host Connection RPC adapter for the Dashboard client. */
 
-import type { DashboardOrchestrator } from '../orchestrator/orchestrator.ts'
-import type { ProjectCatalog } from '../catalog/catalog.ts'
+import type { DashboardRuntimeCoordinator } from '../runtime/coordinator.ts'
 import type { RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import { DashboardDomainError, encodeDashboardError } from '../runtime/errors.ts'
 
 /** Dispatch the intentionally small Dashboard RPC surface. */
 export async function handleDashboardRpc(
-  orchestrator: DashboardOrchestrator,
-  catalog: ProjectCatalog,
+  runtime: DashboardRuntimeCoordinator,
   endpoint: string,
   payload: unknown,
   signal: AbortSignal,
@@ -24,80 +22,90 @@ export async function handleDashboardRpc(
     }
     switch (endpoint) {
       case 'state':
-        return success(await orchestrator.snapshot())
+        return success(await runtime.snapshot())
       case 'refresh':
-        await orchestrator.refresh()
-        return success(await orchestrator.snapshot())
+        await runtime.refresh()
+        return success(await runtime.snapshot())
       case 'issue': {
         const key = readStringField(payload, 'key')
         if (key === undefined) return badRequest('issue requires a non-empty `key`')
-        const detail = orchestrator.issueDetail(key)
+        const detail = runtime.issueDetail(key)
         return detail === undefined ? badRequest(`unknown issue key ${JSON.stringify(key)}`) : success(detail)
       }
       case 'pause': {
         const paused = readBooleanField(payload, 'paused')
         if (paused === undefined) return badRequest('pause requires a boolean `paused`')
-        orchestrator.setPaused(paused)
-        return success(await orchestrator.snapshot())
+        runtime.setPaused(paused)
+        return success(await runtime.snapshot())
       }
       case 'stop': {
         const key = readStringField(payload, 'key')
         if (key === undefined) return badRequest('stop requires a non-empty `key`')
-        if (!orchestrator.stopIssue(key)) return badRequest(`issue ${JSON.stringify(key)} has no running Agent`)
-        return success(await orchestrator.snapshot())
+        if (!runtime.stopIssue(key)) return badRequest(`issue ${JSON.stringify(key)} has no running Agent`)
+        return success(await runtime.snapshot())
       }
       case 'createTask': {
         const input = readCreateTask(payload)
         if (typeof input === 'string') return badRequest(input)
-        await orchestrator.createTask(input, signal)
-        return success(await orchestrator.snapshot())
+        await runtime.createTask(input, signal)
+        return success(await runtime.snapshot())
       }
       case 'updateTask': {
         const nativeRef = readStringField(payload, 'nativeRef')
         const changes = readUpdateTask(readObjectField(payload, 'changes'))
         if (nativeRef === undefined) return badRequest('updateTask requires a non-empty `nativeRef`')
         if (typeof changes === 'string') return badRequest(changes)
-        await orchestrator.updateTask(nativeRef, changes, signal)
-        return success(await orchestrator.snapshot())
+        await runtime.updateTask(nativeRef, changes, signal)
+        return success(await runtime.snapshot())
       }
       case 'deleteTask': {
         const nativeRef = readStringField(payload, 'nativeRef')
         if (nativeRef === undefined) return badRequest('deleteTask requires a non-empty `nativeRef`')
-        if (!await orchestrator.deleteTask(nativeRef, signal)) return badRequest(`unknown local task ${JSON.stringify(nativeRef)}`)
-        return success(await orchestrator.snapshot())
+        if (!await runtime.deleteTask(nativeRef, signal)) return badRequest(`unknown local task ${JSON.stringify(nativeRef)}`)
+        return success(await runtime.snapshot())
+      }
+      case 'switchProject': {
+        const projectId = readStringField(payload, 'projectId')
+        if (projectId === undefined) return badRequest('switchProject requires a non-empty `projectId`')
+        await runtime.switchProject(projectId)
+        return success(await runtime.snapshot())
+      }
+      case 'switchGlobal': {
+        await runtime.switchGlobal()
+        return success(await runtime.snapshot())
       }
       case 'addDiscoveryRoot': {
         const path = readStringField(payload, 'path')
         const maxDepth = readOptionalInteger(payload, 'maxDepth', 1, 8)
         if (path === undefined) return badRequest('addDiscoveryRoot requires a non-empty `path`')
         if (maxDepth === false) return badRequest('addDiscoveryRoot `maxDepth` must be an integer from 1 to 8')
-        await catalog.addDiscoveryRoot({ path, ...(maxDepth === undefined ? {} : { maxDepth }) })
-        return success(await orchestrator.snapshot())
+        await runtime.addDiscoveryRoot({ path, ...(maxDepth === undefined ? {} : { maxDepth }) })
+        return success(await runtime.snapshot())
       }
       case 'removeDiscoveryRoot': {
         const id = readStringField(payload, 'id')
         if (id === undefined) return badRequest('removeDiscoveryRoot requires a non-empty `id`')
-        if (!await catalog.removeDiscoveryRoot(id)) return badRequest(`unknown discovery root ${JSON.stringify(id)}`)
-        return success(await orchestrator.snapshot())
+        if (!await runtime.removeDiscoveryRoot(id)) return badRequest(`unknown discovery root ${JSON.stringify(id)}`)
+        return success(await runtime.snapshot())
       }
       case 'scanProjects': {
         const rootId = readStringField(payload, 'rootId')
         if (rootId === undefined) return badRequest('scanProjects requires a non-empty `rootId`')
-        return success(await catalog.scan(rootId, signal))
+        return success(await runtime.scanProjects(rootId, signal))
       }
       case 'registerProjectCandidate': {
         const token = readStringField(payload, 'token')
         if (token === undefined) return badRequest('registerProjectCandidate requires a non-empty `token`')
-        await catalog.registerCandidate(token)
-        return success(await orchestrator.snapshot())
+        await runtime.registerProjectCandidate(token)
+        return success(await runtime.snapshot())
       }
       case 'registerProject': {
         const path = readStringField(payload, 'path')
         const name = readOptionalString(payload, 'name')
         if (path === undefined) return badRequest('registerProject requires a non-empty `path`')
         if (name === false) return badRequest('registerProject `name` must be a non-empty string when provided')
-        await catalog.registerProject({ path, ...(name === undefined ? {} : { name }) })
-        return success(await orchestrator.snapshot())
+        await runtime.registerProject({ path, ...(name === undefined ? {} : { name }) })
+        return success(await runtime.snapshot())
       }
       default:
         return badRequest(`unknown Dashboard endpoint ${JSON.stringify(endpoint)}`)

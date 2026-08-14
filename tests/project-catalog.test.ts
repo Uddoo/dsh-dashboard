@@ -143,6 +143,47 @@ describe('ProjectCatalog', () => {
     await restarted.stop()
   })
 
+  it('atomically selects a registered project and restores that selection after restart', async () => {
+    const root = await temporaryDirectory()
+    const currentProject = join(root, 'current-project')
+    const targetProject = join(root, 'target-project')
+    await mkdir(currentProject)
+    await mkdir(targetProject)
+    await writeFile(join(currentProject, 'WORKFLOW.md'), '# Current policy\n')
+    await writeFile(join(targetProject, 'WORKFLOW.md'), '# Target policy\n')
+    const storage = memoryDomain()
+    const bootstrap = {
+      currentProject: { root: currentProject, policyPath: 'WORKFLOW.md', registerInCatalog: true },
+      discoveryRoots: [],
+    } as const
+    const first = new ProjectCatalog(storage.context, bootstrap, root)
+    await first.start()
+    const target = await first.registerProject({ path: targetProject, name: 'Target' })
+
+    await expect(first.activateProject(target.id)).resolves.toMatchObject({ id: target.id })
+    expect(first.activeProject()).toMatchObject({ id: target.id, root: targetProject })
+    expect(first.snapshot().projects.find(project => project.id === target.id)?.currentWorkspace).toBe(true)
+    expect(first.executionWorkspaceSource()).toEqual({ strategy: 'controlled-directory', projectRoot: targetProject })
+    await first.stop()
+
+    const restarted = new ProjectCatalog(storage.context, bootstrap, root)
+    await restarted.start()
+    expect(restarted.activeProject()).toMatchObject({ id: target.id, root: targetProject })
+    expect(restarted.snapshot().projects.find(project => project.id === target.id)?.currentWorkspace).toBe(true)
+    expect(restarted.snapshot().projects.find(project => project.root === currentProject)?.currentWorkspace).toBe(false)
+    await restarted.activateGlobal()
+    expect(restarted.selection()).toEqual({ mode: 'global' })
+    expect(restarted.activeProject()).toBeUndefined()
+    expect(restarted.snapshot().projects.every(project => !project.currentWorkspace)).toBe(true)
+    await restarted.stop()
+
+    const globalRestart = new ProjectCatalog(storage.context, bootstrap, root)
+    await globalRestart.start()
+    expect(globalRestart.selection()).toEqual({ mode: 'global' })
+    expect(globalRestart.snapshot().projects.every(project => !project.currentWorkspace)).toBe(true)
+    await globalRestart.stop()
+  })
+
   it('caps scan candidates and rejects an aborted scan before doing more work', async () => {
     const root = await temporaryDirectory()
     const currentProject = join(root, 'current-project')

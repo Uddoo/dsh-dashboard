@@ -23,6 +23,15 @@ export interface TaskSourceContext {
   readonly projectRef: string
 }
 
+/** Dashboard-owned provenance attached only to cross-project projections. */
+export interface TaskIssueOrigin {
+  readonly projectId: string
+  readonly projectName: string
+  readonly providerKind: string
+  readonly providerLabel: string
+  readonly contextLabel: string
+}
+
 /**
  * Normalized task record.
  *
@@ -48,11 +57,16 @@ export interface TaskIssue {
   readonly dispatchable: boolean
   readonly createdAt?: string
   readonly updatedAt?: string
+  /** Present in the global composite view; provider adapters never need to set it. */
+  readonly origin?: TaskIssueOrigin
 }
 
 /** Collision-free process key used for claims and runtime maps. */
-export function issueKey(issue: Pick<TaskIssue, 'sourceKind' | 'scopeRef' | 'nativeRef'>): string {
-  return [issue.sourceKind, issue.scopeRef, issue.nativeRef].map(encodeURIComponent).join(':')
+export function issueKey(issue: Pick<TaskIssue, 'sourceKind' | 'scopeRef' | 'nativeRef' | 'origin'>): string {
+  const providerKey = [issue.sourceKind, issue.scopeRef, issue.nativeRef].map(encodeURIComponent).join(':')
+  return issue.origin === undefined
+    ? providerKey
+    : `project:${encodeURIComponent(issue.origin.projectId)}:${providerKey}`
 }
 
 /** Case- and surrounding-whitespace-insensitive state comparison. */

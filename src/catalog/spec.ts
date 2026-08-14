@@ -3,6 +3,8 @@
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
 import type {
+  ActiveProjectRecord,
+  CatalogSettingId,
   DiscoveryRootId,
   DiscoveryRootRecord,
   ProjectId,
@@ -47,12 +49,27 @@ export const discoveryRootRecordSchema = z.object({
   updatedAt: timestamp,
 }).strict() as z.ZodType<DiscoveryRootRecord>
 
+export const activeProjectRecordSchema = z.union([
+  z.object({
+    mode: z.literal('project').optional(),
+    projectId: id,
+    updatedAt: timestamp,
+  }).strict(),
+  z.object({
+    mode: z.literal('global'),
+    updatedAt: timestamp,
+  }).strict(),
+]) as z.ZodType<ActiveProjectRecord>
+
 export const dashboardCatalogDomainSpec = defineDomain({
   name: 'dsh_dashboard',
+  // The settings table is additive: storage-domain initializes an absent
+  // declared table as empty, so existing v0 Catalog media need no migration.
   version: 0,
   tables: {
     projects: domainTable<ProjectId, ProjectRecord>(projectRecordSchema),
     repositories: domainTable<RepositoryId, RepositoryRecord>(repositoryRecordSchema),
     discovery_roots: domainTable<DiscoveryRootId, DiscoveryRootRecord>(discoveryRootRecordSchema),
+    settings: domainTable<CatalogSettingId, ActiveProjectRecord>(activeProjectRecordSchema),
   },
 })

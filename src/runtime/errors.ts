@@ -2,11 +2,13 @@
 
 export type DashboardErrorCode =
   | 'catalog.candidateExpired'
+  | 'catalog.globalEmpty'
   | 'catalog.maxDepthInvalid'
   | 'catalog.pathAbsolute'
   | 'catalog.pathEscapesRoot'
   | 'catalog.pathNotDirectory'
   | 'catalog.projectNameInvalid'
+  | 'catalog.projectUnknown'
   | 'catalog.rootRemoved'
   | 'catalog.rootUnknown'
   | 'local.priorityInvalid'
@@ -22,6 +24,8 @@ export type DashboardErrorCode =
   | 'local.titleEmpty'
   | 'local.titleTooLong'
   | 'local.workflowStatesMissing'
+  | 'global.readOnly'
+  | 'project.workflowInvalid'
   | 'request.cancelled'
   | 'response.unsupportedScan'
   | 'response.unsupportedState'

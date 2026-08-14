@@ -7,11 +7,13 @@ import type { DashboardLocaleKey } from './locales.ts'
 
 const ERROR_TRANSLATION_KEYS = {
   'catalog.candidateExpired': 'error.catalogCandidateExpired',
+  'catalog.globalEmpty': 'error.catalogGlobalEmpty',
   'catalog.maxDepthInvalid': 'error.catalogMaxDepthInvalid',
   'catalog.pathAbsolute': 'error.catalogPathAbsolute',
   'catalog.pathEscapesRoot': 'error.catalogPathEscapesRoot',
   'catalog.pathNotDirectory': 'error.catalogPathNotDirectory',
   'catalog.projectNameInvalid': 'error.catalogProjectNameInvalid',
+  'catalog.projectUnknown': 'error.catalogProjectUnknown',
   'catalog.rootRemoved': 'error.catalogRootRemoved',
   'catalog.rootUnknown': 'error.catalogRootUnknown',
   'local.priorityInvalid': 'error.localPriorityInvalid',
@@ -27,6 +29,8 @@ const ERROR_TRANSLATION_KEYS = {
   'local.titleEmpty': 'error.localTitleEmpty',
   'local.titleTooLong': 'error.localTitleTooLong',
   'local.workflowStatesMissing': 'error.localWorkflowStatesMissing',
+  'global.readOnly': 'error.globalReadOnly',
+  'project.workflowInvalid': 'error.projectWorkflowInvalid',
   'request.cancelled': 'error.requestCancelled',
   'response.unsupportedScan': 'error.unsupportedScan',
   'response.unsupportedState': 'error.unsupportedState',

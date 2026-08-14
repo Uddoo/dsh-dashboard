@@ -1,6 +1,6 @@
 /** Lossless-JSON Host ↔ Dashboard protocol. */
 
-import type { TaskIssue, TaskSourceContext } from '../domain/issue.ts'
+import type { TaskIssue, TaskIssueOrigin, TaskSourceContext } from '../domain/issue.ts'
 import type {
   AddDiscoveryRootInput,
   ProjectCatalogView,
@@ -51,6 +51,8 @@ export interface IssueRuntimeView {
     readonly reason: string
   }
   readonly recentEvents: readonly RuntimeEventView[]
+  /** Present in the global composite view. */
+  readonly origin?: TaskIssueOrigin
 }
 
 export interface BoardColumn {
@@ -89,6 +91,14 @@ export interface DashboardConfigurationView {
 export interface DashboardSnapshot {
   readonly version: 2
   readonly generatedAt: string
+  readonly selection: {
+    readonly mode: 'project'
+    readonly projectId?: string
+  } | {
+    readonly mode: 'global'
+    readonly projectCount: number
+    readonly readyProjectCount: number
+  }
   readonly context?: TaskSourceContext
   readonly taskMutations: {
     readonly canCreate: boolean
@@ -130,6 +140,8 @@ export interface DashboardRpcMap {
   readonly createTask: { input: CreateTaskInput; output: DashboardSnapshot }
   readonly updateTask: { input: { nativeRef: string; changes: UpdateTaskInput }; output: DashboardSnapshot }
   readonly deleteTask: { input: { nativeRef: string }; output: DashboardSnapshot }
+  readonly switchProject: { input: { projectId: string }; output: DashboardSnapshot }
+  readonly switchGlobal: { input: Record<string, never>; output: DashboardSnapshot }
   readonly addDiscoveryRoot: { input: AddDiscoveryRootInput; output: DashboardSnapshot }
   readonly removeDiscoveryRoot: { input: { id: string }; output: DashboardSnapshot }
   readonly scanProjects: { input: { rootId: string }; output: ProjectScanResult }

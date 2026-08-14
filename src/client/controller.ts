@@ -27,6 +27,8 @@ export interface DashboardDataPort {
   createTask(input: CreateTaskInput): Promise<void>
   updateTask(nativeRef: string, changes: UpdateTaskInput): Promise<void>
   deleteTask(nativeRef: string): Promise<void>
+  switchProject(projectId: string): Promise<void>
+  switchGlobal(): Promise<void>
   addDiscoveryRoot(input: AddDiscoveryRootInput): Promise<void>
   removeDiscoveryRoot(id: string): Promise<void>
   scanProjects(rootId: string): Promise<ProjectScanResult>
@@ -104,6 +106,14 @@ export class DashboardDataController implements DashboardDataPort {
 
   async deleteTask(nativeRef: string): Promise<void> {
     await this.call('deleteTask', { nativeRef }, true, true)
+  }
+
+  async switchProject(projectId: string): Promise<void> {
+    await this.call('switchProject', { projectId }, true, true)
+  }
+
+  async switchGlobal(): Promise<void> {
+    await this.call('switchGlobal', {}, true, true)
   }
 
   async addDiscoveryRoot(input: AddDiscoveryRootInput): Promise<void> {

@@ -90,6 +90,85 @@ describe('DashboardOrchestrator reconciliation', () => {
     if (timer !== undefined) clearTimeout(timer)
   })
 
+  it('does not dispatch a provider result that finishes after the project is deactivated', async () => {
+    let releaseRead: (() => void) | undefined
+    const readGate = new Promise<void>(accept => { releaseRead = accept })
+    const source = {
+      kind: 'linear',
+      context: () => ({ kind: 'linear', providerLabel: 'Linear', projectLabel: 'ENG', projectRef: 'ENG' }),
+      listBoardIssues: vi.fn(async () => { await readGate; return [task('Todo')] }),
+      listIssuesByStates: async () => [],
+      getIssuesByNativeRefs: async () => [],
+    } satisfies TaskSource
+    const store = {
+      path: 'WORKFLOW.md',
+      require: () => definition,
+      status: () => ({ current: definition }),
+    } as unknown as WorkflowStore
+    const orchestrator = new DashboardOrchestrator(
+      { logger: { warn: vi.fn() } } as unknown as Context,
+      store,
+      { require: vi.fn(() => source) } as unknown as TaskSourceRegistry,
+      {} as WorkspaceManager,
+      {} as HarnessAgentRunner,
+      emptyCatalog(),
+      { agentProfile: 'default', permissionPreset: 'workspace-write', workerHost: 'test' },
+    )
+    const access = orchestrator as unknown as { dispatch(board: readonly TaskIssue[], workflow: WorkflowDefinition): void }
+    const dispatch = vi.spyOn(access, 'dispatch')
+
+    const refresh = orchestrator.refresh()
+    await vi.waitFor(() => { expect(source.listBoardIssues).toHaveBeenCalledOnce() })
+    orchestrator.setActive(false)
+    releaseRead?.()
+    await refresh
+
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it('runs an active poll after a read-only overview refresh finishes', async () => {
+    let releaseOverview: (() => void) | undefined
+    const overviewGate = new Promise<void>(accept => { releaseOverview = accept })
+    let reads = 0
+    const source = {
+      kind: 'linear',
+      context: () => ({ kind: 'linear', providerLabel: 'Linear', projectLabel: 'ENG', projectRef: 'ENG' }),
+      listBoardIssues: vi.fn(async () => {
+        reads += 1
+        if (reads === 1) await overviewGate
+        return [task('Todo')]
+      }),
+      listIssuesByStates: async () => [],
+      getIssuesByNativeRefs: async () => [],
+    } satisfies TaskSource
+    const store = {
+      path: 'WORKFLOW.md',
+      require: () => definition,
+      status: () => ({ current: definition }),
+    } as unknown as WorkflowStore
+    const orchestrator = new DashboardOrchestrator(
+      { logger: { warn: vi.fn() } } as unknown as Context,
+      store,
+      { require: vi.fn(() => source) } as unknown as TaskSourceRegistry,
+      {} as WorkspaceManager,
+      {} as HarnessAgentRunner,
+      emptyCatalog(),
+      { agentProfile: 'default', permissionPreset: 'workspace-write', workerHost: 'test' },
+    )
+    const access = orchestrator as unknown as { dispatch(board: readonly TaskIssue[], workflow: WorkflowDefinition): void }
+    const dispatch = vi.spyOn(access, 'dispatch').mockImplementation(() => undefined)
+
+    const overview = orchestrator.refreshOverview()
+    await vi.waitFor(() => { expect(source.listBoardIssues).toHaveBeenCalledOnce() })
+    const active = orchestrator.refresh()
+    releaseOverview?.()
+    await Promise.all([overview, active])
+
+    expect(source.listBoardIssues).toHaveBeenCalledTimes(2)
+    expect(dispatch).toHaveBeenCalledOnce()
+    orchestrator.setActive(false)
+  })
+
   it('stops a missing running issue without classifying it as terminal or removing its workspace', async () => {
     const fixture = createFixture()
     const record = runningRecord(task('Todo'))

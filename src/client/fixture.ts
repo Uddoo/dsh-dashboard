@@ -2,6 +2,7 @@
 
 import type { TaskIssue } from '../domain/issue.ts'
 import type { DashboardSnapshot, IssueRuntimeView, TokenTotals } from '../runtime/types.ts'
+import { aggregateProjectSnapshots } from '../runtime/global.ts'
 
 const clock = '2026-08-14T02:30:00.000Z'
 
@@ -102,6 +103,7 @@ const running: readonly IssueRuntimeView[] = [
 export const fixtureSnapshot: DashboardSnapshot = {
   version: 2,
   generatedAt: clock,
+  selection: { mode: 'project', projectId: '08b8e62d-5a7c-4a3a-a582-b63278347db0' },
   context: { kind: 'linear', providerLabel: 'Linear', projectLabel: 'ENG', projectRef: 'engineering' },
   taskMutations: { canCreate: false, canUpdate: false, canDelete: false, states: [] },
   paused: false,
@@ -145,14 +147,80 @@ export const fixtureSnapshot: DashboardSnapshot = {
         id: '08b8e62d-5a7c-4a3a-a582-b63278347db0', name: 'dsh-dashboard', root: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard',
         policyPath: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard\\WORKFLOW.md', repositoryIds: ['3731aa25-c8f5-4c50-b056-b662bf0a8717'],
         workspaceStrategy: 'worktree', autonomousClaims: false, source: 'current-workspace', createdAt: clock, updatedAt: clock, currentWorkspace: true,
+        trackerKind: 'linear', contextLabel: 'ENG', configurationState: 'ready', runningAgents: 3, retryingAgents: 1,
         repositories: [{ id: '3731aa25-c8f5-4c50-b056-b662bf0a8717', kind: 'git', root: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard', remoteUrl: 'https://github.com/Uddoo/dsh-dashboard.git', branch: 'main', createdAt: clock, updatedAt: clock }],
       },
       {
         id: '4bceae56-7cc1-4419-a912-a6ea110448fb', name: 'dsh-dashboard-test', root: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard-test',
         policyPath: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard-test\\WORKFLOW.md', repositoryIds: [], workspaceStrategy: 'controlled-directory', autonomousClaims: false,
-        source: 'manual', createdAt: clock, updatedAt: clock, currentWorkspace: false, repositories: [],
+        source: 'manual', createdAt: clock, updatedAt: clock, currentWorkspace: false,
+        trackerKind: 'local', contextLabel: '全局任务演示', configurationState: 'ready', runningAgents: 1, retryingAgents: 0, repositories: [],
       },
     ],
     discoveryRoots: [{ id: 'cbf5928c-bc76-43e2-944a-d41e96044fd9', path: 'F:\\Dev\\Code\\05_Apps_Tools', maxDepth: 4, confirmationRequired: true, createdAt: clock, updatedAt: clock }],
   },
 }
+
+const localIssues: readonly TaskIssue[] = [
+  {
+    sourceKind: 'local', scopeRef: 'global-demo', nativeRef: 'local-17', identifier: 'LOCAL-17',
+    title: '整理全局看板验收证据', state: { name: 'Todo', type: 'unstarted' }, labels: ['dashboard'],
+    blockedBy: [], dispatchable: true, priority: 2, updatedAt: '2026-08-14T02:27:00.000Z',
+  },
+  {
+    sourceKind: 'local', scopeRef: 'global-demo', nativeRef: 'local-18', identifier: 'LOCAL-18',
+    title: '验证 Local 与 Linear 状态归一化', state: { name: 'In Progress', type: 'started' }, labels: ['provider'],
+    blockedBy: [], dispatchable: true, priority: 1, updatedAt: '2026-08-14T02:28:00.000Z',
+  },
+  {
+    sourceKind: 'local', scopeRef: 'global-demo', nativeRef: 'local-19', identifier: 'LOCAL-19',
+    title: '记录移动端组合视图检查结果', state: { name: 'Done', type: 'completed' }, labels: ['qa'],
+    blockedBy: [], dispatchable: false, priority: 3, updatedAt: '2026-08-14T02:29:00.000Z',
+  },
+]
+
+export const localFixtureSnapshot: DashboardSnapshot = {
+  ...fixtureSnapshot,
+  selection: { mode: 'project', projectId: '4bceae56-7cc1-4419-a912-a6ea110448fb' },
+  context: { kind: 'local', providerLabel: 'Local', projectLabel: '全局任务演示', projectRef: 'global-demo' },
+  taskMutations: { canCreate: true, canUpdate: true, canDelete: true, states: ['Backlog', 'Todo', 'In Progress', 'Done'] },
+  board: {
+    total: localIssues.length,
+    columns: [
+      { name: 'Backlog', type: 'backlog', position: 0, hidden: false, issues: [] },
+      { name: 'Todo', type: 'unstarted', position: 1, hidden: false, issues: [localIssues[0]!] },
+      { name: 'In Progress', type: 'started', position: 2, hidden: false, issues: [localIssues[1]!] },
+      { name: 'Done', type: 'completed', position: 3, hidden: true, issues: [localIssues[2]!] },
+    ],
+  },
+  runtime: {
+    ...fixtureSnapshot.runtime,
+    running: 0,
+    retrying: 0,
+    blocked: 0,
+    capacity: 3,
+    tokens: totals(0, 0, 0, 0, 0),
+    issues: [],
+  },
+  configuration: {
+    ...fixtureSnapshot.configuration,
+    workflowPath: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard-test\\WORKFLOW.md',
+    trackerKind: 'local', projectName: 'dsh-dashboard-test', projectRef: 'global-demo',
+    workspaceRoot: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard-test\\agent-workspaces',
+    activeStates: ['Todo', 'In Progress'], terminalStates: ['Done', 'Canceled'], credentials: [],
+  },
+  catalog: {
+    ...fixtureSnapshot.catalog,
+    projects: fixtureSnapshot.catalog.projects.map(project => ({ ...project, currentWorkspace: project.id === '4bceae56-7cc1-4419-a912-a6ea110448fb' })),
+  },
+}
+
+const globalCatalog = {
+  ...fixtureSnapshot.catalog,
+  projects: fixtureSnapshot.catalog.projects.map(project => ({ ...project, currentWorkspace: false })),
+}
+
+export const globalFixtureSnapshot = aggregateProjectSnapshots([
+  { project: globalCatalog.projects[0]!, snapshot: fixtureSnapshot },
+  { project: globalCatalog.projects[1]!, snapshot: localFixtureSnapshot },
+], globalCatalog, clock)

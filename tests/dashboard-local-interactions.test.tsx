@@ -6,6 +6,7 @@ import { DashboardSurface } from '../src/client/Dashboard.tsx'
 import { fixtureSnapshot } from '../src/client/fixture.ts'
 
 const catalogCallbacks = {
+  onSwitchProject: async () => {},
   onAddDiscoveryRoot: async () => {},
   onRemoveDiscoveryRoot: async () => {},
   onScanProjects: async () => ({ root: fixtureSnapshot.catalog.discoveryRoots[0]!, candidates: [], truncated: false }),

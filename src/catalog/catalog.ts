@@ -11,11 +11,14 @@ import { DashboardDomainError } from '../runtime/errors.ts'
 import { expandHome } from '../workspace/path-safety.ts'
 import { dashboardCatalogDomainSpec } from './spec.ts'
 import type {
+  ActiveProjectRecord,
+  CatalogSettingId,
   AddDiscoveryRootInput,
   DiscoveryRootId,
   DiscoveryRootRecord,
   ProjectCandidateView,
   ProjectCatalogView,
+  ProjectCatalogSelection,
   ProjectId,
   ProjectRecord,
   ProjectRegistrationSource,
@@ -54,9 +57,12 @@ export class ProjectCatalog {
   private projects: KvTable<ProjectId, ProjectRecord> | undefined
   private repositories: KvTable<RepositoryId, RepositoryRecord> | undefined
   private roots: KvTable<DiscoveryRootId, DiscoveryRootRecord> | undefined
+  private settings: KvTable<CatalogSettingId, ActiveProjectRecord> | undefined
   private readonly candidateClaims = new Map<string, CandidateClaim>()
   private mutationTail: Promise<void> = Promise.resolve()
   private currentRoot?: string
+  private activeProjectId?: ProjectId
+  private globalSelected = false
   private currentWorkspaceSource?: ProjectWorkspaceSource
 
   constructor(
@@ -73,6 +79,7 @@ export class ProjectCatalog {
     this.projects = domain.table('projects')
     this.repositories = domain.table('repositories')
     this.roots = domain.table('discovery_roots')
+    this.settings = domain.table('settings')
     try {
       const currentRoot = await canonicalDirectory(this.bootstrap.currentProject.root, this.cwd)
       this.currentRoot = currentRoot
@@ -84,9 +91,10 @@ export class ProjectCatalog {
       for (const root of this.bootstrap.discoveryRoots) {
         await this.addDiscoveryRoot({ path: root.path, maxDepth: root.maxDepth })
       }
+      let bootstrapProject: ProjectRecord | undefined
       if (this.bootstrap.currentProject.registerInCatalog) {
-        await this.enqueueMutation(async () => {
-          await this.registerDirectory(
+        bootstrapProject = await this.enqueueMutation(async () => {
+          return await this.registerDirectory(
             currentRoot,
             undefined,
             'current-workspace',
@@ -94,6 +102,14 @@ export class ProjectCatalog {
             currentInspection,
           )
         })
+      }
+      const remembered = this.requireSettings().get('active-project')
+      if (remembered?.mode === 'global') {
+        this.globalSelected = true
+      } else {
+        const rememberedProject = remembered === undefined ? undefined : this.requireProjects().get(remembered.projectId)
+        const activeProject = rememberedProject ?? bootstrapProject
+        if (activeProject !== undefined) this.selectInMemory(activeProject)
       }
     } catch (error) {
       await this.stop()
@@ -109,7 +125,11 @@ export class ProjectCatalog {
     this.projects = undefined
     this.repositories = undefined
     this.roots = undefined
+    this.settings = undefined
     this.candidateClaims.clear()
+    delete this.activeProjectId
+    this.globalSelected = false
+    delete this.currentRoot
     delete this.currentWorkspaceSource
     await domain?.close()
   }
@@ -120,11 +140,55 @@ export class ProjectCatalog {
     return source === undefined ? undefined : { ...source }
   }
 
+  /** Resolve the workspace materialization source for one registered project. */
+  projectWorkspaceSource(id: ProjectId): ProjectWorkspaceSource | undefined {
+    const project = this.requireProjects().get(id)
+    return project === undefined ? undefined : this.workspaceSourceFor(project)
+  }
+
+  project(id: ProjectId): ProjectRecord | undefined {
+    const project = this.requireProjects().get(id)
+    return project === undefined ? undefined : { ...project, repositoryIds: [...project.repositoryIds] }
+  }
+
+  activeProject(): ProjectRecord | undefined {
+    return this.activeProjectId === undefined ? undefined : this.project(this.activeProjectId)
+  }
+
+  selection(): ProjectCatalogSelection | undefined {
+    if (this.globalSelected) return { mode: 'global' }
+    return this.activeProjectId === undefined ? undefined : { mode: 'project', projectId: this.activeProjectId }
+  }
+
+  /** Persist and expose a validated project selection. Validation happens before this call. */
+  async activateProject(id: ProjectId): Promise<ProjectRecord> {
+    return await this.enqueueMutation(async () => {
+      const project = this.requireProjects().get(id)
+      if (project === undefined) {
+        throw new DashboardDomainError('catalog.projectUnknown', `unknown registered project ${JSON.stringify(id)}`, { projectId: id })
+      }
+      await this.requireSettings().put('active-project', { mode: 'project', projectId: id, updatedAt: now() })
+      this.selectInMemory(project)
+      return { ...project, repositoryIds: [...project.repositoryIds] }
+    })
+  }
+
+  /** Persist the read-only composite selection without activating any project runtime. */
+  async activateGlobal(): Promise<void> {
+    await this.enqueueMutation(async () => {
+      if (this.requireProjects().size === 0) {
+        throw new DashboardDomainError('catalog.globalEmpty', 'global view requires at least one registered project')
+      }
+      await this.requireSettings().put('active-project', { mode: 'global', updatedAt: now() })
+      this.globalSelected = true
+      delete this.activeProjectId
+    })
+  }
+
   /** Synchronous detached projection from the domain's authoritative memory. */
   snapshot(): ProjectCatalogView {
     const projects = this.requireProjects()
     const repositories = this.requireRepositories()
-    const currentKey = this.currentRoot === undefined ? undefined : pathKey(this.currentRoot)
     return {
       projects: [...projects.entries()]
         .map(([, project]) => ({
@@ -134,7 +198,7 @@ export class ProjectCatalog {
             .map(id => repositories.get(id))
             .filter((value): value is RepositoryRecord => value !== undefined)
             .map(value => ({ ...value })),
-          currentWorkspace: currentKey !== undefined && pathKey(project.root) === currentKey,
+          currentWorkspace: !this.globalSelected && project.id === this.activeProjectId,
         }))
         .sort((left, right) => left.name.localeCompare(right.name, 'en-US') || left.root.localeCompare(right.root, 'en-US')),
       discoveryRoots: [...this.requireRoots().entries()]
@@ -355,6 +419,27 @@ export class ProjectCatalog {
   private requireRoots(): KvTable<DiscoveryRootId, DiscoveryRootRecord> {
     if (this.roots === undefined) throw new Error('dsh-dashboard: Project Catalog is not started')
     return this.roots
+  }
+
+  private requireSettings(): KvTable<CatalogSettingId, ActiveProjectRecord> {
+    if (this.settings === undefined) throw new Error('dsh-dashboard: Project Catalog is not started')
+    return this.settings
+  }
+
+  private selectInMemory(project: ProjectRecord): void {
+    this.globalSelected = false
+    this.activeProjectId = project.id
+    this.currentRoot = project.root
+    this.currentWorkspaceSource = this.workspaceSourceFor(project)
+  }
+
+  private workspaceSourceFor(project: ProjectRecord): ProjectWorkspaceSource {
+    const repository = project.repositoryIds
+      .map(id => this.requireRepositories().get(id))
+      .find((candidate): candidate is RepositoryRecord => candidate !== undefined)
+    return repository === undefined
+      ? { strategy: 'controlled-directory', projectRoot: project.root }
+      : { strategy: 'worktree', projectRoot: project.root, repositoryRoot: repository.root }
   }
 }
 
