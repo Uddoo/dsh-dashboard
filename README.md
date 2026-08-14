@@ -1,10 +1,10 @@
 # dsh-dashboard
 
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/README.zh-CN.md)
 
 `dsh-dashboard` is a Symphony-compatible issue orchestrator and operations dashboard for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). It turns Linear issues into isolated Harness Agent runs while preserving the native Harness shell, sidebar, sessions, tools, model selection, and permission system.
 
-![Dashboard running inside the DeepSeek Harness shell](docs/design/dashboard-board-runtime-v1.png)
+![Dashboard running inside the DeepSeek Harness shell](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/v0.1.0/docs/design/dashboard-board-runtime-v1.png)
 
 ## Highlights
 
@@ -44,9 +44,31 @@ The Host plugin owns tracker access, scheduling, workspaces, hooks, Agent sessio
 - A Linear Personal API Key
 - An existing Harness permission preset; the bundled configuration uses `workspace-write`
 
-The repository is compiled and tested against the npm-published Harness `0.1.0-rc.6` packages. See [Compatibility](docs/compatibility.md) for the audited Harness interfaces and version boundary.
+The repository is compiled and tested against the npm-published Harness `0.1.0-rc.6` packages. See [Compatibility](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/compatibility.md) for the audited Harness interfaces and version boundary.
 
-## Build and install
+## Install
+
+### Install from npm
+
+Install the prebuilt package into the Harness Web profile:
+
+```powershell
+dsh plugin --profile web add dsh-dashboard@0.1.0
+dsh web --dump-config
+dsh web
+```
+
+If the CLI is not installed globally:
+
+```powershell
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.1.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
+```
+
+The npm package contains prebuilt Host and Client entry points and does not require an install-time build allowance.
+
+### Build from source or create a tarball
 
 Run these commands from the repository root in PowerShell:
 
@@ -90,7 +112,7 @@ allowBuilds:
   dsh-dashboard@https://codeload.github.com/Uddoo/dsh-dashboard/tar.gz/<resolved-commit-sha>: true
 ```
 
-Granting `allowBuilds` permits package code to execute on the local machine during installation. Review the pinned source before enabling it. To avoid install-time builds, download a release tarball produced by `pnpm pack` and install that local `.tgz` instead.
+Granting `allowBuilds` permits package code to execute on the local machine during installation. Review the pinned source before enabling it. To avoid install-time builds, use the npm package or download the prebuilt [v0.1.0 release tarball](https://github.com/Uddoo/dsh-dashboard/releases/download/v0.1.0/dsh-dashboard-0.1.0.tgz).
 
 Open the URL printed by `dsh web`, then select **Dashboard** in the native Harness sidebar.
 
@@ -102,7 +124,7 @@ dsh plugin --profile web remove dsh-dashboard
 
 ## Plugin configuration
 
-The package contributes a standard `dsh.bundle.patch`. Its defaults are defined in [cordis.patch.yml](cordis.patch.yml):
+The package contributes a standard `dsh.bundle.patch`. Its defaults are defined in [cordis.patch.yml](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/cordis.patch.yml):
 
 | Key | Purpose |
 | --- | --- |
@@ -147,7 +169,7 @@ Do not commit that file, real tokens, or command output containing tokens. The p
 
 ## WORKFLOW.md
 
-Start with [WORKFLOW.example.md](WORKFLOW.example.md). The YAML frontmatter controls tracker selection, polling, workspace behavior, lifecycle hooks, Agent limits, and visible board states. The Markdown body is rendered as the Agent prompt for each issue.
+Start with [WORKFLOW.example.md](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/WORKFLOW.example.md). The YAML frontmatter controls tracker selection, polling, workspace behavior, lifecycle hooks, Agent limits, and visible board states. The Markdown body is rendered as the Agent prompt for each issue.
 
 Important fields:
 
@@ -188,7 +210,7 @@ Hooks execute as trusted local commands inside the issue workspace. Review them 
 - A failed `after_create` removes the incomplete new workspace so a later attempt can initialize it again.
 - Hook stdout and stderr are retained as bounded tails to prevent unbounded memory growth.
 
-See [Security](docs/security.md) and [Architecture](docs/architecture.md) for the complete trust model and component boundaries.
+See [Security](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/security.md) and [Architecture](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/architecture.md) for the complete trust model and component boundaries.
 
 ## Dashboard
 
@@ -223,7 +245,7 @@ Open `http://127.0.0.1:4173/dev/`. This page uses local fixtures and is useful f
 
 Integration verification should install the generated package, start `dsh web`, enter Dashboard from the native Harness sidebar, and check rendered state, interactions, browser console output, and Host logs.
 
-Design references are kept in [docs/design](docs/design/README.md).
+Design references are kept in [docs/design](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/design/README.md).
 
 ## Relationship to Symphony
 
@@ -239,4 +261,4 @@ Upstream reference: [openai/symphony](https://github.com/openai/symphony).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/LICENSE)

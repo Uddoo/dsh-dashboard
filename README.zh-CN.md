@@ -1,10 +1,10 @@
 # dsh-dashboard
 
-[English](README.md) | 简体中文
+[English](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/README.md) | 简体中文
 
 `dsh-dashboard` 是一个面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Symphony 兼容任务编排器与运行看板。它将 Linear 任务转换为相互隔离的 Harness Agent 运行，同时保留 Harness 原生的外壳、侧栏、会话、工具、模型选择和权限系统。
 
-![运行在 DeepSeek Harness 原生外壳中的 Dashboard](docs/design/dashboard-board-runtime-v1.png)
+![运行在 DeepSeek Harness 原生外壳中的 Dashboard](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/v0.1.0/docs/design/dashboard-board-runtime-v1.png)
 
 ## 主要能力
 
@@ -44,9 +44,31 @@ Host 插件负责 tracker 访问、调度、workspace、Hook、Agent session 和
 - Linear Personal API Key
 - 一个已经存在的 Harness permission preset；随包配置使用 `workspace-write`
 
-本仓库使用 npm 发布的 Harness `0.1.0-rc.6` 包进行编译和测试。已审核的 Harness 接口与版本边界见[兼容性说明](docs/compatibility.md)。
+本仓库使用 npm 发布的 Harness `0.1.0-rc.6` 包进行编译和测试。已审核的 Harness 接口与版本边界见[兼容性说明](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/compatibility.md)。
 
-## 构建与安装
+## 安装
+
+### 从 npm 安装
+
+将预构建插件包安装到 Harness Web profile：
+
+```powershell
+dsh plugin --profile web add dsh-dashboard@0.1.0
+dsh web --dump-config
+dsh web
+```
+
+如果没有全局安装 CLI：
+
+```powershell
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.1.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
+```
+
+npm 包已经包含预构建的 Host 和 Client 入口，不需要授予安装时构建权限。
+
+### 从源码构建或创建 tarball
 
 在仓库根目录使用 PowerShell 执行：
 
@@ -90,7 +112,7 @@ allowBuilds:
   dsh-dashboard@https://codeload.github.com/Uddoo/dsh-dashboard/tar.gz/<resolved-commit-sha>: true
 ```
 
-授予 `allowBuilds` 意味着允许插件包代码在安装期间于本机执行。启用前应审核锁定版本的源码。如果不希望安装时执行构建，可以下载由 `pnpm pack` 生成的 release tarball，再安装本地 `.tgz`。
+授予 `allowBuilds` 意味着允许插件包代码在安装期间于本机执行。启用前应审核锁定版本的源码。如果不希望安装时执行构建，可以使用 npm 包，或下载预构建的 [v0.1.0 release tarball](https://github.com/Uddoo/dsh-dashboard/releases/download/v0.1.0/dsh-dashboard-0.1.0.tgz)。
 
 打开 `dsh web` 输出的地址，然后从 Harness 原生侧栏选择 **Dashboard**。
 
@@ -102,7 +124,7 @@ dsh plugin --profile web remove dsh-dashboard
 
 ## 插件配置
 
-插件包提供标准 `dsh.bundle.patch`，默认值位于 [cordis.patch.yml](cordis.patch.yml)：
+插件包提供标准 `dsh.bundle.patch`，默认值位于 [cordis.patch.yml](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/cordis.patch.yml)：
 
 | 配置项 | 用途 |
 | --- | --- |
@@ -147,7 +169,7 @@ LINEAR_API_KEY: lin_api_replace_me
 
 ## WORKFLOW.md
 
-可以从 [WORKFLOW.example.md](WORKFLOW.example.md) 开始。YAML frontmatter 控制 tracker、轮询、workspace、生命周期 Hook、Agent 限制和可见看板状态；Markdown 正文会针对每个任务渲染为 Agent prompt。
+可以从 [WORKFLOW.example.md](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/WORKFLOW.example.md) 开始。YAML frontmatter 控制 tracker、轮询、workspace、生命周期 Hook、Agent 限制和可见看板状态；Markdown 正文会针对每个任务渲染为 Agent prompt。
 
 重要字段：
 
@@ -188,7 +210,7 @@ Hook 会在任务工作区内作为受信任的本地命令运行，应当像审
 - `after_create` 失败时会删除不完整的新工作区，使后续尝试能够重新初始化。
 - Hook stdout 和 stderr 只保留有上限的尾部内容，避免输出导致无上限内存增长。
 
-完整信任模型和组件边界见[安全说明](docs/security.md)与[架构说明](docs/architecture.md)。
+完整信任模型和组件边界见[安全说明](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/security.md)与[架构说明](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/architecture.md)。
 
 ## Dashboard
 
@@ -223,7 +245,7 @@ pnpm run dev:dashboard
 
 集成验证应当安装生成的插件包、启动 `dsh web`、从 Harness 原生侧栏进入 Dashboard，并检查页面渲染、交互、浏览器控制台和 Host 日志。
 
-设计参考保存在 [docs/design](docs/design/README.md)。
+设计参考保存在 [docs/design](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/docs/design/README.md)。
 
 ## 与 Symphony 的关系
 
@@ -239,4 +261,4 @@ pnpm run dev:dashboard
 
 ## 许可证
 
-[MIT](LICENSE)
+[MIT](https://github.com/Uddoo/dsh-dashboard/blob/v0.1.0/LICENSE)
