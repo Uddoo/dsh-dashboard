@@ -7,6 +7,7 @@ import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Domain, KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { CurrentProjectConfig, DiscoveryRootConfig } from '../config.ts'
+import { DashboardDomainError } from '../runtime/errors.ts'
 import { expandHome } from '../workspace/path-safety.ts'
 import { dashboardCatalogDomainSpec } from './spec.ts'
 import type {
@@ -148,7 +149,10 @@ export class ProjectCatalog {
       const canonical = await canonicalDirectory(input.path, this.cwd, true)
       const maxDepth = input.maxDepth ?? DEFAULT_MAX_DEPTH
       if (!Number.isInteger(maxDepth) || maxDepth < 1 || maxDepth > 8) {
-        throw new Error('discovery root maxDepth must be an integer from 1 to 8')
+        throw new DashboardDomainError(
+          'catalog.maxDepthInvalid',
+          'discovery root maxDepth must be an integer from 1 to 8',
+        )
       }
       const existing = findByPath(this.requireRoots(), canonical)
       if (existing !== undefined) {
@@ -183,7 +187,13 @@ export class ProjectCatalog {
   /** Discover candidates without persisting them; registration tokens expire and are one-use. */
   async scan(rootId: DiscoveryRootId, signal?: AbortSignal): Promise<ProjectScanResult> {
     const root = this.requireRoots().get(rootId)
-    if (root === undefined) throw new Error(`unknown discovery root ${JSON.stringify(rootId)}`)
+    if (root === undefined) {
+      throw new DashboardDomainError(
+        'catalog.rootUnknown',
+        `unknown discovery root ${JSON.stringify(rootId)}`,
+        { rootId },
+      )
+    }
     throwIfAborted(signal)
     this.purgeCandidateClaims()
     const result = await scanProjectDirectories(root, signal)
@@ -218,11 +228,19 @@ export class ProjectCatalog {
     const claim = this.candidateClaims.get(token)
     this.candidateClaims.delete(token)
     if (claim === undefined || claim.expiresAt <= Date.now()) {
-      throw new Error('project candidate token is missing or expired; scan the discovery root again')
+      throw new DashboardDomainError(
+        'catalog.candidateExpired',
+        'project candidate token is missing or expired; scan the discovery root again',
+      )
     }
     return await this.enqueueMutation(async () => {
       const root = this.requireRoots().get(claim.rootId)
-      if (root === undefined) throw new Error('the discovery root was removed; scan again after adding an allowed root')
+      if (root === undefined) {
+        throw new DashboardDomainError(
+          'catalog.rootRemoved',
+          'the discovery root was removed; scan again after adding an allowed root',
+        )
+      }
       const canonical = await canonicalDirectory(claim.path, this.cwd)
       assertContainedOrEqual(root.path, canonical, 'project candidate')
       return await this.registerDirectory(canonical, undefined, 'discovery')
@@ -235,7 +253,10 @@ export class ProjectCatalog {
       const canonical = await canonicalDirectory(input.path, this.cwd, true)
       const name = input.name?.trim()
       if (name !== undefined && (name === '' || name.length > 200)) {
-        throw new Error('project name must contain 1 to 200 characters')
+        throw new DashboardDomainError(
+          'catalog.projectNameInvalid',
+          'project name must contain 1 to 200 characters',
+        )
       }
       return await this.registerDirectory(canonical, name, 'manual')
     })
@@ -446,21 +467,42 @@ async function inspectProjectDirectories(
 
 async function canonicalDirectory(input: string, cwd: string, requireAbsoluteInput = false): Promise<string> {
   const expanded = expandHome(input.trim())
-  if (requireAbsoluteInput && !isAbsolute(expanded)) throw new Error('path must be absolute (or start with `~`)')
+  if (requireAbsoluteInput && !isAbsolute(expanded)) {
+    throw new DashboardDomainError(
+      'catalog.pathAbsolute',
+      'path must be absolute (or start with `~`)',
+    )
+  }
   const path = resolve(cwd, expanded)
-  const info = await lstat(path)
-  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`path is not a real directory: ${path}`)
+  const info = await directoryInfo(path)
   const canonical = await realpath(path)
-  const canonicalInfo = await lstat(canonical)
-  if (!canonicalInfo.isDirectory() || canonicalInfo.isSymbolicLink()) throw new Error(`path is not a real directory: ${canonical}`)
+  await directoryInfo(canonical)
   return canonical
+}
+
+async function directoryInfo(path: string): Promise<Awaited<ReturnType<typeof lstat>>> {
+  try {
+    const info = await lstat(path)
+    if (info.isDirectory() && !info.isSymbolicLink()) return info
+  } catch (error) {
+    if (!isNodeError(error) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) throw error
+  }
+  throw new DashboardDomainError(
+    'catalog.pathNotDirectory',
+    `path is not a real directory: ${path}`,
+    { path },
+  )
 }
 
 function assertContainedOrEqual(root: string, candidate: string, label: string): void {
   const rel = relative(resolve(root), resolve(candidate))
   const separator = process.platform === 'win32' ? '\\' : '/'
   if (rel === '..' || rel.startsWith(`..${separator}`) || isAbsolute(rel)) {
-    throw new Error(`${label} escapes its allowed root: ${candidate}`)
+    throw new DashboardDomainError(
+      'catalog.pathEscapesRoot',
+      `${label} escapes its allowed root: ${candidate}`,
+      { path: candidate },
+    )
   }
 }
 
@@ -472,6 +514,10 @@ async function isRegularFile(path: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error
 }
 
 async function gitOutput(cwd: string, args: readonly string[], signal?: AbortSignal): Promise<string | undefined> {

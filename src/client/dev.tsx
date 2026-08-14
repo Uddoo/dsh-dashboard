@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { DashboardSnapshot } from '../runtime/types.ts'
 import { DashboardSurface } from './Dashboard.tsx'
+import { DashboardI18nProvider, createDashboardTranslator } from './i18n.tsx'
 import { fixtureSnapshot } from './fixture.ts'
 import { installDashboardStyles } from './styles.ts'
 
@@ -83,4 +84,8 @@ function DevApp() {
 
 const root = document.querySelector('#root')
 if (root === null) throw new Error('Missing #root for Dashboard fixture')
-createRoot(root).render(<DevApp />)
+createRoot(root).render(
+  <DashboardI18nProvider t={createDashboardTranslator('zh')}>
+    <DevApp />
+  </DashboardI18nProvider>,
+)

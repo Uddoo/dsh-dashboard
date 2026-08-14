@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import type { IssueState, TaskIssue, TaskSourceContext } from '../domain/issue.ts'
 import { normalizedState } from '../domain/issue.ts'
+import { DashboardDomainError } from '../runtime/errors.ts'
 import type {
   CreateTaskInput,
   TaskSource,
@@ -124,10 +125,19 @@ export class LocalTaskSource implements TaskSource {
       const store = await this.readStore()
       const project = store.projects[routing.projectId]
       const index = project?.issues.findIndex(issue => issue.id === nativeRef) ?? -1
-      if (project === undefined || index < 0) throw new Error(`Local task ${JSON.stringify(nativeRef)} was not found`)
+      if (project === undefined || index < 0) {
+        throw new DashboardDomainError(
+          'local.taskNotFound',
+          `Local task ${JSON.stringify(nativeRef)} was not found`,
+          { nativeRef },
+        )
+      }
       const previous = project.issues[index]!
       if (input.expectedUpdatedAt !== undefined && input.expectedUpdatedAt !== previous.updatedAt) {
-        throw new Error('Local task changed since the editor was opened; close and reopen it to load the latest version')
+        throw new DashboardDomainError(
+          'local.taskChanged',
+          'Local task changed since the editor was opened; close and reopen it to load the latest version',
+        )
       }
       const description = input.description === undefined
         ? previous.description
@@ -184,9 +194,14 @@ export class LocalTaskSource implements TaskSource {
   private validRouting(): LocalRoutingConfig {
     const routing = this.routing()
     if (routing.projectId.trim() === '' || ['__proto__', 'prototype', 'constructor'].includes(routing.projectId)) {
-      throw new Error('dsh-dashboard: local project_id is invalid')
+      throw new DashboardDomainError('local.projectInvalid', 'dsh-dashboard: local project_id is invalid')
     }
-    if (routing.states.length === 0) throw new Error('dsh-dashboard: local tracker requires at least one workflow state')
+    if (routing.states.length === 0) {
+      throw new DashboardDomainError(
+        'local.workflowStatesMissing',
+        'dsh-dashboard: local tracker requires at least one workflow state',
+      )
+    }
     return routing
   }
 
@@ -208,7 +223,11 @@ export class LocalTaskSource implements TaskSource {
     try {
       value = JSON.parse(raw)
     } catch {
-      throw new Error(`dsh-dashboard: local task store ${this.storePath} is not valid JSON`)
+      throw new DashboardDomainError(
+        'local.storeInvalidJson',
+        `dsh-dashboard: local task store ${this.storePath} is not valid JSON`,
+        { path: this.storePath },
+      )
     }
     return decodeStore(value, this.storePath)
   }
@@ -218,7 +237,13 @@ export class LocalTaskSource implements TaskSource {
     await mkdir(parent, { recursive: true })
     try {
       const target = await lstat(this.storePath)
-      if (target.isSymbolicLink() || !target.isFile()) throw new Error(`dsh-dashboard: local task store target is not a regular file: ${this.storePath}`)
+      if (target.isSymbolicLink() || !target.isFile()) {
+        throw new DashboardDomainError(
+          'local.storeTargetInvalid',
+          `dsh-dashboard: local task store target is not a regular file: ${this.storePath}`,
+          { path: this.storePath },
+        )
+      }
     } catch (error) {
       if (!(isNodeError(error) && error.code === 'ENOENT')) throw error
     }
@@ -267,19 +292,27 @@ function normalizeIssue(issue: StoredIssue, routing: LocalRoutingConfig): TaskIs
 function checkedState(value: string, routing: LocalRoutingConfig): string {
   const state = routing.states.find(candidate => normalizedState(candidate) === normalizedState(value))
   if (state !== undefined) return state
-  throw new Error(`Local task state ${JSON.stringify(value)} is not declared by the current workflow`)
+  throw new DashboardDomainError(
+    'local.stateUnknown',
+    `Local task state ${JSON.stringify(value)} is not declared by the current workflow`,
+    { state: value },
+  )
 }
 
 function requiredTitle(value: string): string {
   const title = value.trim()
-  if (title === '') throw new Error('Local task title must not be empty')
-  if (title.length > 500) throw new Error('Local task title must not exceed 500 characters')
+  if (title === '') throw new DashboardDomainError('local.titleEmpty', 'Local task title must not be empty')
+  if (title.length > 500) {
+    throw new DashboardDomainError('local.titleTooLong', 'Local task title must not exceed 500 characters')
+  }
   return title
 }
 
 function checkedPriority(value?: number): number | undefined {
   if (value === undefined) return undefined
-  if (!Number.isInteger(value) || value < 1 || value > 4) throw new Error('Local task priority must be an integer from 1 to 4')
+  if (!Number.isInteger(value) || value < 1 || value > 4) {
+    throw new DashboardDomainError('local.priorityInvalid', 'Local task priority must be an integer from 1 to 4')
+  }
   return value
 }
 
@@ -294,12 +327,20 @@ function expandPath(value: string): string {
 
 function decodeStore(value: unknown, path: string): LocalStore {
   if (!isObject(value) || value.version !== 1 || !isObject(value.projects)) {
-    throw new Error(`dsh-dashboard: local task store ${path} has an unsupported schema`)
+    throw new DashboardDomainError(
+      'local.storeSchemaUnsupported',
+      `dsh-dashboard: local task store ${path} has an unsupported schema`,
+      { path },
+    )
   }
   const projects: Record<string, StoredProject> = Object.create(null) as Record<string, StoredProject>
   for (const [projectId, projectValue] of Object.entries(value.projects)) {
     if (!isObject(projectValue) || !Number.isInteger(projectValue.nextNumber) || (projectValue.nextNumber as number) < 1 || !Array.isArray(projectValue.issues)) {
-      throw new Error(`dsh-dashboard: local task store project ${JSON.stringify(projectId)} is invalid`)
+      throw new DashboardDomainError(
+        'local.storeProjectInvalid',
+        `dsh-dashboard: local task store project ${JSON.stringify(projectId)} is invalid`,
+        { projectId },
+      )
     }
     const issues = projectValue.issues.map((issue, index) => decodeIssue(issue, projectId, index))
     projects[projectId] = { nextNumber: projectValue.nextNumber as number, issues }
@@ -308,7 +349,13 @@ function decodeStore(value: unknown, path: string): LocalStore {
 }
 
 function decodeIssue(value: unknown, projectId: string, index: number): StoredIssue {
-  if (!isObject(value)) throw new Error(`dsh-dashboard: local task ${projectId}[${index}] is invalid`)
+  if (!isObject(value)) {
+    throw new DashboardDomainError(
+      'local.storeTaskInvalid',
+      `dsh-dashboard: local task ${projectId}[${index}] is invalid`,
+      { projectId, index },
+    )
+  }
   const id = readNonBlank(value.id)
   const title = readNonBlank(value.title)
   const state = readNonBlank(value.state)
@@ -318,7 +365,11 @@ function decodeIssue(value: unknown, projectId: string, index: number): StoredIs
   const description = typeof value.description === 'string' ? value.description : undefined
   const priority = value.priority === undefined ? undefined : checkedPriority(typeof value.priority === 'number' ? value.priority : Number.NaN)
   if (id === undefined || title === undefined || state === undefined || createdAt === undefined || updatedAt === undefined || number === undefined) {
-    throw new Error(`dsh-dashboard: local task ${projectId}[${index}] is invalid`)
+    throw new DashboardDomainError(
+      'local.storeTaskInvalid',
+      `dsh-dashboard: local task ${projectId}[${index}] is invalid`,
+      { projectId, index },
+    )
   }
   return { id, number, title, ...(description === undefined ? {} : { description }), state, ...(priority === undefined ? {} : { priority }), createdAt, updatedAt }
 }

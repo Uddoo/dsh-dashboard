@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { DashboardFooterAction, DashboardSurface } from '../src/client/Dashboard.tsx'
 import { DashboardUiController } from '../src/client/controller.ts'
+import { DashboardI18nProvider, createDashboardTranslator } from '../src/client/i18n.tsx'
 import { fixtureSnapshot } from '../src/client/fixture.ts'
 
 const catalogCallbacks = {
@@ -16,9 +17,9 @@ describe('Dashboard visual contract', () => {
   it('exposes the native sidebar entry as a toggle', () => {
     const ui = new DashboardUiController()
     ui.open()
-    const markup = renderToStaticMarkup(<DashboardFooterAction wide ui={ui} />)
+    const markup = renderToStaticMarkup(<DashboardFooterAction wide ui={ui} t={createDashboardTranslator('zh')} />)
 
-    expect(markup).toContain('aria-label="Dashboard"')
+    expect(markup).toContain('aria-label="仪表盘"')
     expect(markup).toContain('aria-pressed="true"')
   })
 
@@ -38,15 +39,15 @@ describe('Dashboard visual contract', () => {
       />,
     )
 
-    expect(markup).toContain('<h1>Dashboard</h1>')
+    expect(markup).toContain('<h1>仪表盘</h1>')
     expect(markup).toContain('Linear')
     expect(markup).toContain('ENG')
     expect(markup).toContain('Implement issue detail inspector')
-    expect(markup).toContain('Stop agent')
+    expect(markup).toContain('停止 Agent')
     expect(markup).toContain('role="region"')
     expect(markup).not.toContain('DeepSeek Harness navigation')
     expect(markup).not.toContain('aria-modal="true"')
-    expect(markup).not.toMatch(/aria-label="Add task/u)
+    expect(markup).not.toMatch(/aria-label="向.*添加任务/u)
   })
 
   it('adds a column-scoped plus control only for the Host-local task source', () => {
@@ -70,8 +71,30 @@ describe('Dashboard visual contract', () => {
       />,
     )
 
-    expect(markup).toContain('Local')
+    expect(markup).toContain('本地')
     expect(markup).toContain('Personal')
-    expect(markup).toContain('aria-label="Add task to Backlog"')
+    expect(markup).toContain('aria-label="向“Backlog”添加任务"')
+  })
+
+  it('keeps a complete English surface available through the same i18n key set', () => {
+    const markup = renderToStaticMarkup(
+      <DashboardI18nProvider t={createDashboardTranslator('en')}>
+        <DashboardSurface
+          {...catalogCallbacks}
+          snapshot={fixtureSnapshot}
+          onRefresh={async () => {}}
+          onPause={async () => {}}
+          onStop={async () => {}}
+          onCreateTask={async () => {}}
+          onUpdateTask={async () => {}}
+          onDeleteTask={async () => {}}
+          onOpenSession={() => {}}
+        />
+      </DashboardI18nProvider>,
+    )
+
+    expect(markup).toContain('<h1>Dashboard</h1>')
+    expect(markup).toContain('Agent capacity')
+    expect(markup).toContain('Hidden columns')
   })
 })

@@ -71,7 +71,7 @@ This repository compiles and tests against the published Harness `0.1.0-rc.6` pa
 ### npm
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.3.0
+dsh plugin --profile web add dsh-dashboard@0.4.0
 dsh web --dump-config
 dsh web
 ```
@@ -79,7 +79,7 @@ dsh web
 Without a global CLI:
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.3.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.4.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -95,7 +95,7 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-dsh plugin --profile web add ./dsh-dashboard-0.3.0.tgz
+dsh plugin --profile web add ./dsh-dashboard-0.4.0.tgz
 dsh web
 ```
 
@@ -284,6 +284,12 @@ The plugin registers through Harness-native UI slots:
 
 The plugin does not replace or duplicate the Harness sidebar.
 
+Dashboard copy is integrated with Harness's native locale service. Simplified Chinese and English dictionaries are type-checked against the same key set, and the active language follows the persisted **Settings → Language** preference. When no Host preference exists, Harness derives the initial language from the browser. Tracker-owned content such as issue titles, workflow state names, and Agent messages remains in its source language.
+
+Simplified Chinese Dashboard running inside DeepSeek Harness:
+
+![Simplified Chinese Dashboard inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-i18n-zh.png)
+
 - **Board** — source-native task columns, hidden states, filtering, Local task controls, and task inspection.
 - **Runtime** — running, retrying, and blocked records with turns, token usage, worker host, and update time.
 - **Projects** — durable registered Projects and separate Repository metadata, workspace strategy, current-workspace marker, discovery roots, bounded scans, and explicit candidate confirmation.
@@ -321,7 +327,7 @@ For deterministic component development:
 pnpm run dev:dashboard
 ```
 
-`http://127.0.0.1:4173/dev/` uses fixtures and is useful for component-level visual and interaction checks. It is not evidence that the packaged plugin loads correctly in Harness.
+`http://127.0.0.1:4173/dev/` uses local fixture data, renders the UI in Chinese by default, and is useful for component-level visual and interaction checks. It is not evidence that the packaged plugin loads correctly in Harness.
 
 Integration verification must build or pack the plugin, install that artifact into a Harness Web profile, start `dsh web` from a dedicated workspace, enter Dashboard from the native sidebar, and check provider data, Local mutations, browser console output, and Host logs.
 

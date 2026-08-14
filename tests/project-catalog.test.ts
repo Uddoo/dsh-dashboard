@@ -109,7 +109,10 @@ describe('ProjectCatalog', () => {
 
     await expect(catalog.removeDiscoveryRoot(registeredRoot.id)).resolves.toBe(true)
     await expect(catalog.registerCandidate(token)).rejects.toThrow('missing or expired')
-    await expect(catalog.registerProject({ path: 'relative-project' })).rejects.toThrow('path must be absolute')
+    await expect(catalog.registerProject({ path: 'relative-project' })).rejects.toMatchObject({
+      dashboardCode: 'catalog.pathAbsolute',
+      message: 'path must be absolute (or start with `~`)',
+    })
     await catalog.stop()
   })
 

@@ -3,19 +3,23 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ISessions } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle, SessionId } from '@deepseek-ai/dsh-client-connection/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { DashboardFooterAction, DashboardOverlay } from './Dashboard.tsx'
 import { DashboardDataController, DashboardUiController } from './controller.ts'
+import { en, DASHBOARD_LOCALE_NS, zh } from './locales.ts'
 import { installDashboardStyles } from './styles.ts'
 
 export { DashboardSurface } from './Dashboard.tsx'
 export type { DashboardSurfaceProps } from './Dashboard.tsx'
+export { createDashboardTranslator, DashboardI18nProvider } from './i18n.tsx'
+export type { DashboardLocale, DashboardTranslate } from './i18n.tsx'
 export { DashboardDataController, DashboardUiController } from './controller.ts'
 export type { DashboardDataPort, DashboardDataState } from './controller.ts'
 
 /** Browser services required before the trigger and overlay can register. */
-export const inject = ['connection', 'sessions', 'slots']
+export const inject = ['connection', 'locale', 'sessions', 'slots']
 
 /** Mount both visual surfaces over one visibility store and one RPC projection. */
 export function apply(ctx: ClientContext): void {
@@ -25,17 +29,20 @@ export function apply(ctx: ClientContext): void {
   const sessions = ctx.sessions as unknown as ISessions
   const ui = new DashboardUiController()
   const data = new DashboardDataController(connection.rpc)
+  ctx.effect(() => ctx.locale.register(DASHBOARD_LOCALE_NS, { zh, en }), 'dsh-dashboard: dictionaries')
   ctx.effect(() => installDashboardStyles(), 'dsh-dashboard: styles')
 
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',
     id: 'dsh-dashboard-entry',
+    locale: DASHBOARD_LOCALE_NS,
     inject: () => ({ ui }),
   }, DashboardFooterAction))
 
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
     id: 'dsh-dashboard-overlay',
+    locale: DASHBOARD_LOCALE_NS,
     inject: () => ({
       ui,
       data,

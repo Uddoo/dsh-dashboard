@@ -4,11 +4,17 @@ import type { ClientConnectionRpc, RpcResult } from '@deepseek-ai/dsh-client-con
 import type { DashboardSnapshot } from '../runtime/types.ts'
 import type { AddDiscoveryRootInput, ProjectScanResult, RegisterProjectInput } from '../catalog/types.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
+import {
+  DashboardRequestError,
+  dashboardProtocolError,
+  dashboardRpcError,
+  normalizeDashboardError,
+} from './errors.ts'
 
 export interface DashboardDataState {
   readonly snapshot?: DashboardSnapshot | undefined
   readonly loading: boolean
-  readonly error?: string | undefined
+  readonly error?: DashboardRequestError | undefined
 }
 
 export interface DashboardDataPort {
@@ -132,16 +138,19 @@ export class DashboardDataController implements DashboardDataPort {
     }
     try {
       const result = await this.rpc.call('/dsh-dashboard', endpoint, payload) as RpcResult<unknown>
-      if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+      if (!result.ok) {
+        throw dashboardRpcError(result.error.code, result.error.message)
+      }
       const snapshot = parseSnapshot(result.value)
       this.publish({ snapshot, loading: false })
     } catch (error) {
+      const normalized = normalizeDashboardError(error)
       this.publish({
         ...this.state,
         loading: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: normalized,
       })
-      if (propagateError) throw error
+      if (propagateError) throw normalized
     } finally {
       this.activeRequests -= 1
       if (this.activeRequests === 0 && this.state.loading) this.publish({ ...this.state, loading: false })
@@ -154,17 +163,20 @@ export class DashboardDataController implements DashboardDataPort {
     this.publish({ ...current, loading: true })
     try {
       const result = await this.rpc.call('/dsh-dashboard', 'scanProjects', { rootId }) as RpcResult<unknown>
-      if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+      if (!result.ok) {
+        throw dashboardRpcError(result.error.code, result.error.message)
+      }
       const scan = parseProjectScan(result.value)
       this.publish({ ...this.state, loading: false })
       return scan
     } catch (error) {
+      const normalized = normalizeDashboardError(error)
       this.publish({
         ...this.state,
         loading: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: normalized,
       })
-      throw error
+      throw normalized
     } finally {
       this.activeRequests -= 1
       if (this.activeRequests === 0 && this.state.loading) this.publish({ ...this.state, loading: false })
@@ -179,14 +191,17 @@ export class DashboardDataController implements DashboardDataPort {
 
 function parseSnapshot(value: unknown): DashboardSnapshot {
   if (value === null || typeof value !== 'object' || (value as { version?: unknown }).version !== 2) {
-    throw new Error('Dashboard Host returned an unsupported state payload')
+    throw dashboardProtocolError('response.unsupportedState', 'Dashboard Host returned an unsupported state payload')
   }
   return value as DashboardSnapshot
 }
 
 function parseProjectScan(value: unknown): ProjectScanResult {
   if (value === null || typeof value !== 'object' || !Array.isArray((value as { candidates?: unknown }).candidates)) {
-    throw new Error('Dashboard Host returned an unsupported Project Catalog scan payload')
+    throw dashboardProtocolError(
+      'response.unsupportedScan',
+      'Dashboard Host returned an unsupported Project Catalog scan payload',
+    )
   }
   return value as ProjectScanResult
 }

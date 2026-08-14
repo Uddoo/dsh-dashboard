@@ -71,7 +71,7 @@ Host 插件负责 Provider 访问、调度、workspace、Hook、Agent session、
 ### 从 npm 安装
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.3.0
+dsh plugin --profile web add dsh-dashboard@0.4.0
 dsh web --dump-config
 dsh web
 ```
@@ -79,7 +79,7 @@ dsh web
 如果没有全局安装 CLI：
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.3.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.4.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -95,7 +95,7 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-dsh plugin --profile web add ./dsh-dashboard-0.3.0.tgz
+dsh plugin --profile web add ./dsh-dashboard-0.4.0.tgz
 dsh web
 ```
 
@@ -284,6 +284,12 @@ Hook 会在任务工作区内作为受信任的本地命令运行，应当像审
 
 插件不会替换或复制 Harness 侧栏。
 
+Dashboard 文案接入 Harness 原生本地化服务。简体中文和英文资源由同一组类型安全的键约束，当前语言跟随 Harness 中持久化的**设置 → 语言**偏好；若宿主尚未保存语言偏好，则由 Harness 根据浏览器语言确定初始语言。任务标题、工作流状态名和 Agent 消息等由 Tracker 或用户提供的内容保持原始语言，不会被插件擅自翻译。
+
+在 DeepSeek Harness 中实际运行的简体中文 Dashboard：
+
+![DeepSeek Harness 中的简体中文 Dashboard](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-i18n-zh.png)
+
 - **Board**：任务源原生列、隐藏状态、筛选、Local 任务维护与任务详情。
 - **Runtime**：运行中、重试中和被阻塞的记录，以及 turn、token、worker host 和更新时间。
 - **Projects**：持久化的 Project 与独立 Repository 元数据、工作区策略、当前工作区标记、发现根目录、受限扫描和候选显式确认。
@@ -321,7 +327,7 @@ pnpm run build
 pnpm run dev:dashboard
 ```
 
-`http://127.0.0.1:4173/dev/` 使用本地 fixture，适合组件级视觉与交互检查，但不能证明打包插件已经在 Harness 中正确加载。
+`http://127.0.0.1:4173/dev/` 使用本地 fixture 数据并默认以中文渲染界面，适合组件级视觉与交互检查，但不能证明打包插件已经在 Harness 中正确加载。
 
 集成验证必须构建或打包插件，把该构件安装到 Harness Web profile，在专用工作区启动 `dsh web`，从原生侧栏进入 Dashboard，并检查 Provider 数据、Local 任务维护、浏览器控制台和 Host 日志。
 

@@ -38,12 +38,12 @@ describe('Dashboard local task interactions', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add task to Backlog' }))
-    expect(screen.getByRole('dialog', { name: 'Create task' }).getAttribute('aria-modal')).toBe('true')
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Local acceptance test' } })
-    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Created inside Dashboard' } })
-    fireEvent.change(screen.getByLabelText('Priority'), { target: { value: '2' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
+    fireEvent.click(screen.getByRole('button', { name: '向“Backlog”添加任务' }))
+    expect(screen.getByRole('dialog', { name: '创建任务' }).getAttribute('aria-modal')).toBe('true')
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: 'Local acceptance test' } })
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: 'Created inside Dashboard' } })
+    fireEvent.change(screen.getByLabelText('优先级'), { target: { value: '2' } })
+    fireEvent.click(screen.getByRole('button', { name: '创建任务' }))
 
     await waitFor(() => {
       expect(onCreateTask).toHaveBeenCalledWith({
@@ -76,10 +76,10 @@ describe('Dashboard local task interactions', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Harden workspace cleanup boundaries/u }))
-    fireEvent.click(screen.getByRole('button', { name: 'Edit local task' }))
-    const save = screen.getByRole('button', { name: 'Save changes' })
+    fireEvent.click(screen.getByRole('button', { name: '编辑本地任务' }))
+    const save = screen.getByRole('button', { name: '保存更改' })
     expect((save as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Harden scoped workspace cleanup' } })
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: 'Harden scoped workspace cleanup' } })
     fireEvent.click(save)
 
     await waitFor(() => {

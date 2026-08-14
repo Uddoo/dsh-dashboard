@@ -77,7 +77,10 @@ describe('LocalTaskSource', () => {
 
     await expect(source.updateTask(opened.nativeRef, {
       title: 'Human title', expectedUpdatedAt: opened.updatedAt,
-    })).rejects.toThrow('changed since the editor was opened')
+    })).rejects.toMatchObject({
+      dashboardCode: 'local.taskChanged',
+      message: 'Local task changed since the editor was opened; close and reopen it to load the latest version',
+    })
 
     expect((await source.getIssuesByNativeRefs([opened.nativeRef]))[0]).toMatchObject({
       title: 'Original title', description: 'Agent workpad', state: { name: 'In Progress' }, updatedAt: agentUpdated.updatedAt,

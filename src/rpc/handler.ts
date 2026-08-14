@@ -3,6 +3,7 @@
 import type { DashboardOrchestrator } from '../orchestrator/orchestrator.ts'
 import type { ProjectCatalog } from '../catalog/catalog.ts'
 import type { RpcResult } from '@deepseek-ai/dsh-client-connection/client'
+import { DashboardDomainError, encodeDashboardError } from '../runtime/errors.ts'
 
 /** Dispatch the intentionally small Dashboard RPC surface. */
 export async function handleDashboardRpc(
@@ -13,10 +14,14 @@ export async function handleDashboardRpc(
   signal: AbortSignal,
   ready: Promise<void> = Promise.resolve(),
 ): Promise<RpcResult<unknown>> {
-  if (signal.aborted) return failure('cancelled', 'Dashboard request was cancelled')
+  if (signal.aborted) {
+    return failure('cancelled', localizedError('request.cancelled', 'Dashboard request was cancelled'))
+  }
   try {
     await ready
-    if (signal.aborted) return failure('cancelled', 'Dashboard request was cancelled')
+    if (signal.aborted) {
+      return failure('cancelled', localizedError('request.cancelled', 'Dashboard request was cancelled'))
+    }
     switch (endpoint) {
       case 'state':
         return success(await orchestrator.snapshot())
@@ -99,9 +104,19 @@ export async function handleDashboardRpc(
     }
   } catch (error) {
     if (signal.aborted) {
-      return failure('cancelled', signal.reason instanceof Error ? signal.reason.message : 'Dashboard request was cancelled')
+      return failure(
+        'cancelled',
+        localizedError(
+          'request.cancelled',
+          signal.reason instanceof Error ? signal.reason.message : 'Dashboard request was cancelled',
+        ),
+      )
     }
-    return failure('internal', error instanceof Error ? error.message : String(error))
+    const encoded = encodeDashboardError(error)
+    return failure(
+      encoded === undefined ? 'internal' : 'bad-request',
+      encoded ?? (error instanceof Error ? error.message : String(error)),
+    )
   }
 }
 
@@ -153,8 +168,17 @@ function badRequest(message: string): RpcResult<never> {
   return { ok: false, error: { code: 'bad-request', message, details: { issues: [] } } }
 }
 
-function failure(code: 'cancelled' | 'internal', message: string): RpcResult<never> {
+function failure(
+  code: 'bad-request' | 'cancelled' | 'internal',
+  message: string,
+): RpcResult<never> {
+  if (code === 'bad-request') return badRequest(message)
+  if (code === 'cancelled') return { ok: false, error: { code, message, details: {} } }
   return { ok: false, error: { code, message, details: {} } }
+}
+
+function localizedError(code: 'request.cancelled', message: string): string {
+  return encodeDashboardError(new DashboardDomainError(code, message)) ?? message
 }
 
 function readStringField(value: unknown, key: string): string | undefined {
