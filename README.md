@@ -83,11 +83,11 @@ Pin the installation to a release tag so later repository changes cannot silentl
 dsh plugin --profile web add github:Uddoo/dsh-dashboard#v0.1.0
 ```
 
-Git installations fetch source code, so pnpm must run this package's `prepare` script to build `lib/`. pnpm 10 and newer require explicit permission before running dependency build scripts. If the first install reports a blocked build, add the package to the Web profile's `$DSH_HOME/profiles/web/pnpm-workspace.yaml` and repeat the command:
+Git installations fetch source code, so pnpm must run this package's `prepare` script to build `lib/`. pnpm 10 and newer require explicit permission before running dependency build scripts. If the first install reports a blocked build, copy the **exact package key printed by pnpm** into the Web profile's `$DSH_HOME/profiles/web/pnpm-workspace.yaml`, then repeat the command. GitHub tags resolve to commit-specific codeload URLs, so a package-name-only key is not sufficient:
 
 ```yaml
 allowBuilds:
-  dsh-dashboard: true
+  dsh-dashboard@https://codeload.github.com/Uddoo/dsh-dashboard/tar.gz/<resolved-commit-sha>: true
 ```
 
 Granting `allowBuilds` permits package code to execute on the local machine during installation. Review the pinned source before enabling it. To avoid install-time builds, download a release tarball produced by `pnpm pack` and install that local `.tgz` instead.

@@ -83,11 +83,11 @@ npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 dsh plugin --profile web add github:Uddoo/dsh-dashboard#v0.1.0
 ```
 
-Git 安装获取的是源码，因此 pnpm 必须运行本包的 `prepare` 脚本来构建 `lib/`。pnpm 10 及以上版本在执行依赖构建脚本前要求显式授权。如果首次安装报告构建被阻止，请在 Web profile 的 `$DSH_HOME/profiles/web/pnpm-workspace.yaml` 中加入本包，然后重新执行安装命令：
+Git 安装获取的是源码，因此 pnpm 必须运行本包的 `prepare` 脚本来构建 `lib/`。pnpm 10 及以上版本在执行依赖构建脚本前要求显式授权。如果首次安装报告构建被阻止，请把 pnpm 输出的**完整 package key 原样复制**到 Web profile 的 `$DSH_HOME/profiles/web/pnpm-workspace.yaml`，然后重新执行安装命令。GitHub tag 会解析为带 commit 的 codeload URL，因此只填写包名是不够的：
 
 ```yaml
 allowBuilds:
-  dsh-dashboard: true
+  dsh-dashboard@https://codeload.github.com/Uddoo/dsh-dashboard/tar.gz/<resolved-commit-sha>: true
 ```
 
 授予 `allowBuilds` 意味着允许插件包代码在安装期间于本机执行。启用前应审核锁定版本的源码。如果不希望安装时执行构建，可以下载由 `pnpm pack` 生成的 release tarball，再安装本地 `.tgz`。
