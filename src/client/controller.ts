@@ -2,6 +2,7 @@
 
 import type { ClientConnectionRpc, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { DashboardSnapshot } from '../runtime/types.ts'
+import type { AddDiscoveryRootInput, ProjectScanResult, RegisterProjectInput } from '../catalog/types.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 
 export interface DashboardDataState {
@@ -20,6 +21,11 @@ export interface DashboardDataPort {
   createTask(input: CreateTaskInput): Promise<void>
   updateTask(nativeRef: string, changes: UpdateTaskInput): Promise<void>
   deleteTask(nativeRef: string): Promise<void>
+  addDiscoveryRoot(input: AddDiscoveryRootInput): Promise<void>
+  removeDiscoveryRoot(id: string): Promise<void>
+  scanProjects(rootId: string): Promise<ProjectScanResult>
+  registerProjectCandidate(token: string): Promise<void>
+  registerProject(input: RegisterProjectInput): Promise<void>
 }
 
 /** Root overlay visibility shared by the sidebar trigger and shell-overlay entry. */
@@ -94,6 +100,26 @@ export class DashboardDataController implements DashboardDataPort {
     await this.call('deleteTask', { nativeRef }, true, true)
   }
 
+  async addDiscoveryRoot(input: AddDiscoveryRootInput): Promise<void> {
+    await this.call('addDiscoveryRoot', input, true, true)
+  }
+
+  async removeDiscoveryRoot(id: string): Promise<void> {
+    await this.call('removeDiscoveryRoot', { id }, true, true)
+  }
+
+  async scanProjects(rootId: string): Promise<ProjectScanResult> {
+    return await this.callProjectScan(rootId)
+  }
+
+  async registerProjectCandidate(token: string): Promise<void> {
+    await this.call('registerProjectCandidate', { token }, true, true)
+  }
+
+  async registerProject(input: RegisterProjectInput): Promise<void> {
+    await this.call('registerProject', input, true, true)
+  }
+
   private async readState(): Promise<void> {
     await this.call('state', {}, false)
   }
@@ -122,6 +148,29 @@ export class DashboardDataController implements DashboardDataPort {
     }
   }
 
+  private async callProjectScan(rootId: string): Promise<ProjectScanResult> {
+    this.activeRequests += 1
+    const { error: _previousError, ...current } = this.state
+    this.publish({ ...current, loading: true })
+    try {
+      const result = await this.rpc.call('/dsh-dashboard', 'scanProjects', { rootId }) as RpcResult<unknown>
+      if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+      const scan = parseProjectScan(result.value)
+      this.publish({ ...this.state, loading: false })
+      return scan
+    } catch (error) {
+      this.publish({
+        ...this.state,
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    } finally {
+      this.activeRequests -= 1
+      if (this.activeRequests === 0 && this.state.loading) this.publish({ ...this.state, loading: false })
+    }
+  }
+
   private publish(next: DashboardDataState): void {
     this.state = next
     for (const listener of [...this.listeners]) listener()
@@ -129,8 +178,15 @@ export class DashboardDataController implements DashboardDataPort {
 }
 
 function parseSnapshot(value: unknown): DashboardSnapshot {
-  if (value === null || typeof value !== 'object' || (value as { version?: unknown }).version !== 1) {
+  if (value === null || typeof value !== 'object' || (value as { version?: unknown }).version !== 2) {
     throw new Error('Dashboard Host returned an unsupported state payload')
   }
   return value as DashboardSnapshot
+}
+
+function parseProjectScan(value: unknown): ProjectScanResult {
+  if (value === null || typeof value !== 'object' || !Array.isArray((value as { candidates?: unknown }).candidates)) {
+    throw new Error('Dashboard Host returned an unsupported Project Catalog scan payload')
+  }
+  return value as ProjectScanResult
 }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-dashboard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A Symphony-compatible multi-provider task orchestrator and dashboard for DeepSeek Harness",
   "keywords": [
     "ai-agent",
@@ -103,6 +103,8 @@
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-permission-presets": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-session": ">=0.1.0-rc.5 <0.2.0",
+    "@deepseek-ai/dsh-storage": ">=0.1.0-rc.6 <0.2.0",
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.0-rc.6 <0.2.0",
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/schemastery": "^3.18.1",
     "react": "^18.2.0",
@@ -122,6 +124,8 @@
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
     "@deepseek-ai/dsh-permission-presets": "0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-storage-domain": "0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
     "@deepseek-ai/schemastery": "3.18.1",
     "@testing-library/react": "^16.3.0",

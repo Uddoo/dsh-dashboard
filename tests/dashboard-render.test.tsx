@@ -4,6 +4,14 @@ import { DashboardFooterAction, DashboardSurface } from '../src/client/Dashboard
 import { DashboardUiController } from '../src/client/controller.ts'
 import { fixtureSnapshot } from '../src/client/fixture.ts'
 
+const catalogCallbacks = {
+  onAddDiscoveryRoot: async () => {},
+  onRemoveDiscoveryRoot: async () => {},
+  onScanProjects: async () => ({ root: fixtureSnapshot.catalog.discoveryRoots[0]!, candidates: [], truncated: false }),
+  onRegisterProjectCandidate: async () => {},
+  onRegisterProject: async () => {},
+}
+
 describe('Dashboard visual contract', () => {
   it('exposes the native sidebar entry as a toggle', () => {
     const ui = new DashboardUiController()
@@ -17,6 +25,7 @@ describe('Dashboard visual contract', () => {
   it('renders the approved title, dynamic remote context, board, and inspector without local create controls', () => {
     const markup = renderToStaticMarkup(
       <DashboardSurface
+        {...catalogCallbacks}
         snapshot={fixtureSnapshot}
         initialSelectedKey="linear:ENG:issue-238"
         onRefresh={async () => {}}
@@ -49,6 +58,7 @@ describe('Dashboard visual contract', () => {
     } as const
     const markup = renderToStaticMarkup(
       <DashboardSurface
+        {...catalogCallbacks}
         snapshot={localSnapshot}
         onRefresh={async () => {}}
         onPause={async () => {}}

@@ -10,6 +10,7 @@ import type { TaskSource, TaskSourceRegistry } from '../src/task-source/index.ts
 import type { WorkflowStore } from '../src/workflow/store.ts'
 import type { WorkflowDefinition } from '../src/workflow/types.ts'
 import type { WorkspaceManager } from '../src/workspace/manager.ts'
+import type { ProjectCatalog } from '../src/catalog/catalog.ts'
 
 interface TestRunningRecord {
   issue: TaskIssue
@@ -70,7 +71,8 @@ describe('DashboardOrchestrator reconciliation', () => {
       { require: vi.fn(() => source) } as unknown as TaskSourceRegistry,
       {} as WorkspaceManager,
       {} as HarnessAgentRunner,
-      { permissionPreset: 'workspace-write', workerHost: 'test' },
+      emptyCatalog(),
+      { agentProfile: 'default', permissionPreset: 'workspace-write', workerHost: 'test' },
     )
     orchestrator.setPaused(true)
 
@@ -210,7 +212,8 @@ function createFixture(overrides: {
     sources,
     workspaces,
     runner,
-    { permissionPreset: 'workspace-write', workerHost: 'test' },
+    emptyCatalog(),
+    { agentProfile: 'default', permissionPreset: 'workspace-write', workerHost: 'test' },
   )
   return { access: orchestrator as unknown as OrchestratorAccess, remove }
 }
@@ -234,6 +237,8 @@ function runningRecord(issue: TaskIssue): TestRunningRecord {
 }
 
 const definition: WorkflowDefinition = {
+  version: 1,
+  project: { name: 'Test project', agent_profile: 'default' },
   tracker: {
     kind: 'linear', provider: { project_slug: 'engineering' }, required_labels: [],
     active_states: ['Todo', 'In Progress'], terminal_states: ['Done'],
@@ -251,4 +256,10 @@ const definition: WorkflowDefinition = {
   prompt: 'Work on {{ issue.identifier }}',
   sourcePath: 'WORKFLOW.md',
   loadedAt: new Date(0).toISOString(),
+}
+
+function emptyCatalog(): ProjectCatalog {
+  return {
+    snapshot: () => ({ projects: [], discoveryRoots: [], globalBrokerEnabled: false }),
+  } as unknown as ProjectCatalog
 }

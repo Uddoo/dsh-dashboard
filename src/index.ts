@@ -8,9 +8,12 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-storage'
+import type {} from '@deepseek-ai/dsh-storage-domain'
 import type {} from '@deepseek-ai/dsh-tools'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { Config as ConfigSchema, type Config as PluginConfig } from './config.ts'
+import { ProjectCatalog } from './catalog/catalog.ts'
 import { HarnessAgentRunner } from './agent/harness-runner.ts'
 import { AsanaTaskSource } from './asana/source.ts'
 import { GitHubTaskSource } from './github/source.ts'
@@ -24,6 +27,7 @@ import { TaskSourceRegistry } from './task-source/index.ts'
 import { WorkflowStore } from './workflow/store.ts'
 import { providerString, providerStringMap, requireProviderString, workflowStateOrder } from './workflow/provider.ts'
 import { WorkspaceManager } from './workspace/manager.ts'
+import { resolveWorkspaceRoot } from './workspace/path-safety.ts'
 
 export { TaskSourceRegistry } from './task-source/index.ts'
 export type { TaskSource } from './task-source/index.ts'
@@ -40,6 +44,7 @@ export const inject = [
   'credentials',
   'permissionPresets',
   'sessions',
+  'storageDomain',
   'tools',
 ]
 
@@ -48,6 +53,7 @@ export const Config = ConfigSchema
 
 /** Compose built-in providers, the orchestrator, and trusted client RPC. */
 export function apply(ctx: Context, config: PluginConfig): void {
+  const agentProfile = config.agentProfile
   const linearConfig = config.linear ?? { endpoint: 'https://api.linear.app/graphql', apiKeyRef: 'LINEAR_API_KEY' }
   const githubConfig = config.github ?? { endpoint: 'https://api.github.com', tokenRef: 'GITHUB_TOKEN' }
   const jiraConfig = config.jira ?? { emailRef: 'JIRA_EMAIL', apiTokenRef: 'JIRA_API_TOKEN' }
@@ -62,7 +68,15 @@ export function apply(ctx: Context, config: PluginConfig): void {
     asanaConfig.tokenRef,
     gitlabConfig.tokenRef,
   ]) credentialRef(ref)
-  const workflow = new WorkflowStore(ctx, config.workflowPath)
+  const currentProjectRoot = resolveWorkspaceRoot(config.currentProject.root)
+  const workflow = new WorkflowStore(ctx, config.currentProject.policyPath, {
+    defaults: config.policyDefaults,
+    agentProfile,
+  }, currentProjectRoot)
+  const catalog = new ProjectCatalog(ctx, {
+    currentProject: config.currentProject,
+    discoveryRoots: config.discovery.roots,
+  })
   const sources = new TaskSourceRegistry(ctx)
   const linear = new LinearTaskSource(ctx.credentials, linearConfig, () => {
     const current = workflow.require().tracker
@@ -137,11 +151,15 @@ export function apply(ctx: Context, config: PluginConfig): void {
       terminalStates: current.terminal_states,
     }
   }))
-  const workspaces = new WorkspaceManager(ctx, config.workerHost)
+  const workspaces = new WorkspaceManager(
+    ctx,
+    agentProfile.workerHost,
+    () => catalog.executionWorkspaceSource(),
+  )
   const runner = new HarnessAgentRunner(ctx, {
-    permissionPreset: config.permissionPreset,
-    ...(config.agentPreset === undefined ? {} : { agentPreset: config.agentPreset }),
-    workerHost: config.workerHost,
+    permissionPreset: agentProfile.permissionPreset,
+    ...(agentProfile.agentPreset === undefined ? {} : { agentPreset: agentProfile.agentPreset }),
+    workerHost: agentProfile.workerHost,
   })
   const orchestrator = new DashboardOrchestrator(
     ctx,
@@ -149,32 +167,39 @@ export function apply(ctx: Context, config: PluginConfig): void {
     sources,
     workspaces,
     runner,
+    catalog,
     {
-      permissionPreset: config.permissionPreset,
-      ...(config.agentPreset === undefined ? {} : { agentPreset: config.agentPreset }),
-      workerHost: config.workerHost,
+      agentProfile: agentProfile.id,
+      permissionPreset: agentProfile.permissionPreset,
+      ...(agentProfile.agentPreset === undefined ? {} : { agentPreset: agentProfile.agentPreset }),
+      workerHost: agentProfile.workerHost,
     },
   )
 
+  let disposeOrchestrator: (() => Promise<void>) | undefined
+  let disposed = false
+  const startup = catalog.start().then(async () => {
+    await workflow.start()
+    if (disposed) return
+    disposeOrchestrator = orchestrator.start()
+  })
+
   ctx.connection.rpc.handle(
     '/dsh-dashboard',
-    (endpoint, payload, signal) => handleDashboardRpc(orchestrator, endpoint, payload, signal),
+    (endpoint, payload, signal) => handleDashboardRpc(orchestrator, catalog, endpoint, payload, signal, startup),
     { authority: 'trusted-host' },
   )
 
   ctx.effect(() => {
-    let disposeOrchestrator: (() => Promise<void>) | undefined
-    let disposed = false
-    void workflow.start().then(() => {
-      if (disposed) return
-      disposeOrchestrator = orchestrator.start()
-    }).catch((error: unknown) => {
-      ctx.logger.error('dsh-dashboard: workflow watcher failed to start: %s', error instanceof Error ? error.message : String(error))
+    void startup.catch((error: unknown) => {
+      ctx.logger.error('dsh-dashboard: runtime failed to start: %s', error instanceof Error ? error.message : String(error))
     })
     return async () => {
       disposed = true
+      await startup.catch(() => undefined)
       workflow.stop()
       await disposeOrchestrator?.()
+      await catalog.stop()
     }
   }, 'dsh-dashboard runtime')
 }

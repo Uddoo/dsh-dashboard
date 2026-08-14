@@ -14,7 +14,9 @@
 - 为每个任务创建持久工作区，并执行可配置的 `after_create`、`before_run`、`after_run` 和 `before_remove` 生命周期 Hook。
 - 通过 Harness 原生 Agent 执行任务，并在配置的 turn 上限内续跑同一个 Harness session。
 - 对失败运行执行有上限的指数退避，并在每次派发前重新核对任务源状态。
-- 在 Harness 原生侧栏中增加 **Dashboard** 入口；Board、Runtime 和 Configuration 视图展示任务状态、session、workspace、turn、token、Agent 事件、重试、阻塞原因和凭据健康状态。
+- 在 Harness 原生侧栏中增加 **Dashboard** 入口；Board、Runtime、Projects 和 Configuration 视图展示任务状态、session、workspace、turn、token、Agent 事件、重试、阻塞原因、已注册项目和凭据健康状态。
+- 使用 Harness 存储维护持久化 Project Catalog。项目既可显式注册，也可在受限根目录内扫描发现；扫描候选未经确认绝不会写入 Catalog。
+- 分别建模 Project 与 Git Repository。Git 项目使用 worktree 工作区策略，非 Git 项目使用受控目录；自动任务领取始终关闭。
 - 当任务源为 **Local** 时，在各看板列显示 Linear 风格的 `+` 控件；用户可以创建、编辑、切换状态、设置优先级与描述，并删除由 Host 原子 JSON 文件保存的本地任务。
 - 所有外部凭据始终留在受信任 Host 侧；凭据值不会进入 Dashboard RPC payload 或浏览器状态。
 
@@ -40,6 +42,8 @@ flowchart LR
     P["Linear / GitHub / Jira / Asana / GitLab"] --> S["TaskSource 适配器"]
     L["Host 本地任务文件"] --> S
     W["WORKFLOW.md"] --> O["Orchestrator"]
+    C["Project Catalog\nHarness storage domain"] --> O
+    X["显式注册 / 受限扫描"] --> C
     S --> O
     O --> M["任务独立工作区"]
     O --> A["Harness Agent session"]
@@ -50,13 +54,13 @@ flowchart LR
     D --> U["Harness 原生 Dashboard"]
 ```
 
-Host 插件负责 Provider 访问、调度、workspace、Hook、Agent session、本地持久化与运行状态。浏览器只接收受约束的状态投影，并只提供 Pause/Resume、Stop、Refresh 和 Local 任务维护操作。
+Host 插件负责 Provider 访问、调度、workspace、Hook、Agent session、Project Catalog 持久化、本地任务持久化与运行状态。浏览器只接收受约束的状态投影，并只提供 Pause/Resume、Stop、Refresh、Catalog 操作和 Local 任务维护操作。
 
 ## 环境要求
 
 - Node.js `22.19+` 或 `24+`
 - 从源码构建时使用 pnpm `11.19+`
-- DeepSeek Harness Web profile `0.1.0-rc.5` 或 `0.1.0-rc.6`
+- DeepSeek Harness Web profile `0.1.0-rc.6`
 - 一个已经存在的 Harness permission preset；随包配置使用 `workspace-write`
 - 选定远程 Provider 的凭据；Local 任务不需要凭据
 
@@ -67,7 +71,7 @@ Host 插件负责 Provider 访问、调度、workspace、Hook、Agent session、
 ### 从 npm 安装
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.2.0
+dsh plugin --profile web add dsh-dashboard@0.3.0
 dsh web --dump-config
 dsh web
 ```
@@ -75,7 +79,7 @@ dsh web
 如果没有全局安装 CLI：
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.2.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.3.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -91,7 +95,7 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-dsh plugin --profile web add ./dsh-dashboard-0.2.0.tgz
+dsh plugin --profile web add ./dsh-dashboard-0.3.0.tgz
 dsh web
 ```
 
@@ -109,10 +113,15 @@ dsh plugin --profile web remove dsh-dashboard
 
 | 配置项 | 用途 |
 | --- | --- |
-| `workflowPath` | `WORKFLOW.md` 路径；相对路径从 Harness 进程工作目录解析，也可以使用绝对路径。 |
-| `permissionPreset` | 应用于每个编排 Agent 的显式 Harness permission preset；必填。 |
-| `agentPreset` | 可选 Harness Agent preset；省略时使用可用的 roster 默认值。 |
-| `workerHost` | Runtime 观测信息中显示的 Host 标签，默认为 `local`。 |
+| `currentProject.root` | Harness 选中的项目根目录；相对路径从 Harness 进程工作目录解析。 |
+| `currentProject.policyPath` | 项目 `WORKFLOW.md`，从 `currentProject.root` 解析。 |
+| `currentProject.registerInCatalog` | 启动时把当前工作区注册到 Project Catalog。 |
+| `agentProfile.id` | 项目策略中 `project.agent_profile` 引用的稳定 Profile id。 |
+| `agentProfile.permissionPreset` | 应用于编排 Agent 的显式 Harness permission preset；必填。 |
+| `agentProfile.agentPreset` | 可选 Harness Agent preset；省略时使用可用的 roster 默认值。 |
+| `agentProfile.workerHost` | Runtime 观测信息中显示的 Host 标签，默认为 `local`。 |
+| `policyDefaults.*` | 轮询、workspace root、Hook 超时、并发、turn 和重试退避的全局默认值；项目 `policy` 可覆盖。 |
+| `discovery.roots` | 启动时写入 Catalog 的受限扫描根目录；每项包含绝对 `path` 与 1 到 8 的 `maxDepth`。 |
 | `linear.endpoint` / `linear.apiKeyRef` | Linear GraphQL 地址与 API Key 凭据引用。 |
 | `github.endpoint` / `github.tokenRef` | GitHub REST 地址与 token 引用；可改为 GitHub Enterprise 地址。 |
 | `jira.emailRef` / `jira.apiTokenRef` | Jira Cloud 账号邮箱与 API token 引用；站点地址写在 `WORKFLOW.md`。 |
@@ -125,9 +134,25 @@ Web profile 覆盖示例：
 ```yaml
 - id: dsh-dashboard
   config:
-    workflowPath: C:\work\my-project\WORKFLOW.md
-    permissionPreset: workspace-write
-    workerHost: workstation-01
+    currentProject:
+      root: C:\work\my-project
+      policyPath: WORKFLOW.md
+      registerInCatalog: true
+    agentProfile:
+      id: default
+      permissionPreset: workspace-write
+      workerHost: workstation-01
+    policyDefaults:
+      pollingIntervalMs: 5000
+      workspaceRoot: .dsh-dashboard/workspaces
+      hookTimeoutMs: 60000
+      maxConcurrentAgents: 10
+      maxTurns: 20
+      maxRetryBackoffMs: 300000
+    discovery:
+      roots:
+        - path: C:\work
+          maxDepth: 4
     github:
       tokenRef: GITHUB_TOKEN
       endpoint: https://api.github.com
@@ -141,7 +166,7 @@ Web profile 覆盖示例：
       storePath: C:\work\dsh-dashboard\tasks.json
 ```
 
-`permissionPreset` 被设计为显式必填项：无人值守编排不能静默选择或提升 sandbox/approval policy。
+`agentProfile.permissionPreset` 被设计为显式必填项：无人值守编排不能静默选择或提升 sandbox/approval policy。项目发现不代表执行授权；每个持久化 Project 的自动任务领取都保持关闭。
 
 ## 凭据
 
@@ -184,18 +209,22 @@ GITLAB_TOKEN: glpat_replace_me
 
 | 字段 | 说明 |
 | --- | --- |
+| `version` | 策略格式版本；当前格式必须为 `1`。 |
+| `project.name` | Configuration 中显示的人类可读 Project 名称。 |
+| `project.agent_profile` | Agent Profile id，必须与插件配置中的 `agentProfile.id` 完全一致。 |
 | `tracker.kind` | `linear`、`github`、`jira`、`asana`、`gitlab` 或 `local`。 |
 | `tracker.provider.context_label` | Dashboard 标题旁显示的可选项目短标签。 |
 | `tracker.required_labels` | 任务派发前必须全部存在的标签。 |
 | `tracker.active_states` | 可以运行 Agent 的任务状态。 |
 | `tracker.terminal_states` | 停止运行并触发安全 workspace 清理的状态。 |
-| `workspace.root` | 存放各任务持久工作区的父目录。 |
-| `hooks.timeout_ms` | 每个生命周期 Hook 独立使用的超时时间。 |
-| `agent.max_concurrent_agents` | Agent 全局并发上限。 |
-| `agent.max_concurrent_agents_by_state` | 各任务源状态可选的独立并发上限。 |
-| `agent.max_turns` | 同一个 Harness session 中允许续跑的最大 turn 数。 |
-| `agent.max_retry_backoff_ms` | 重试退避时间上限。 |
-| `dashboard.visible_states` | 在 Hidden columns 分组之前显示的看板列。 |
+| `policy.polling.interval_ms` | 项目对全局轮询间隔的覆盖。 |
+| `policy.workspace.root` | 存放各任务持久工作区的父目录；相对路径从策略文件所在目录解析。 |
+| `policy.hooks.timeout_ms` | 每个生命周期 Hook 独立使用的超时时间。 |
+| `policy.agent.max_concurrent_agents` | 项目的 Agent 并发上限。 |
+| `policy.agent.max_concurrent_agents_by_state` | 各任务源状态可选的独立并发上限。 |
+| `policy.agent.max_turns` | 同一个 Harness session 中允许续跑的最大 turn 数。 |
+| `policy.agent.max_retry_backoff_ms` | 重试退避时间上限。 |
+| `policy.dashboard.visible_states` | 在 Hidden columns 分组之前显示的看板列。 |
 
 Provider 路由字段：
 
@@ -229,6 +258,8 @@ Local 任务由 Host 持久化，不使用浏览器 `localStorage`。所有写�
 
 Hook 会在任务工作区内作为受信任的本地命令运行，应当像审核构建或部署脚本一样审核这些命令。
 
+当前项目属于 Git 仓库时，`after_create` 运行前该工作区已经是所选仓库的 detached worktree，不要在 Hook 中再次 clone。当前项目不是 Git 仓库时，插件会提供一个受控空目录，`after_create` 可以显式初始化它。
+
 ## 调度与工作区安全
 
 - 符合条件的任务按优先级、创建时间和标识符排序。
@@ -255,7 +286,18 @@ Hook 会在任务工作区内作为受信任的本地命令运行，应当像审
 
 - **Board**：任务源原生列、隐藏状态、筛选、Local 任务维护与任务详情。
 - **Runtime**：运行中、重试中和被阻塞的记录，以及 turn、token、worker host 和更新时间。
+- **Projects**：持久化的 Project 与独立 Repository 元数据、工作区策略、当前工作区标记、发现根目录、受限扫描和候选显式确认。
 - **Configuration**：最后有效 workflow、Provider 上下文、每个凭据引用的健康状态、workspace root、轮询间隔、permission preset 和 Agent 限制。
+
+执行面仍绑定到 Harness 选中的 `currentProject`。注册或发现其他 Project 只会把它写入 Catalog，不会启用跨项目自动任务领取。
+
+通过 Harness 原生 Dashboard 入口加载的持久化 Project Catalog：
+
+![DeepSeek Harness 中的 Project Catalog](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-project-catalog-desktop.png)
+
+受限扫描发现的候选必须经过显式确认：
+
+![DeepSeek Harness 中的项目发现确认窗口](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-project-scan-desktop.png)
 
 通过 Harness 原生 Dashboard 入口加载的 Local 任务看板：
 

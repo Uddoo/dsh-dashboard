@@ -8,6 +8,17 @@ process with the packed plugin installed. It intentionally uses a mock Linear
 endpoint and an idle Agent runtime, so it demonstrates host/client/RPC/task
 source integration and native-shell composition rather than a real model run.
 
+`project-catalog-v1.png` and `project-catalog-scan-v1.png` extend that baseline
+with the Projects view and the bounded-scan confirmation flow. They preserve
+the same Harness shell, header rhythm, restrained table styling, and dynamic
+tracker context.
+
+`../images/dashboard-project-catalog-desktop.png` and
+`../images/dashboard-project-scan-desktop.png` are the corresponding desktop
+implementation captures from the packed plugin running in the real Harness Web
+profile. `../images/dashboard-project-catalog-mobile.png` records the narrow
+responsive surface after fixing tab overflow and the compact mode-control icon.
+
 ## Locked decisions
 
 - The product title is **Dashboard**.
@@ -30,6 +41,11 @@ source integration and native-shell composition rather than a real model run.
   adds a `+` beside the existing column overflow action, plus edit/delete in the
   inspector. Dragging and reordering remain outside the current interaction set.
 - The `Runtime` view owns full running/blocked/retry tables and rate-limit data.
+- The `Projects` view owns registered Project and Repository metadata,
+  worktree/controlled-directory strategy, discovery roots, manual registration,
+  and scan confirmation. It does not introduce a plugin-owned sidebar.
+- Project discovery is informational until the user confirms registration;
+  registration does not enable a Global Broker or autonomous cross-project claims.
 - The `Configuration` view owns WORKFLOW, tracker, polling, concurrency,
   workspace, agent-preset, and permission-preset state.
 

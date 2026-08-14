@@ -34,6 +34,9 @@ export const StopIcon = (props: IconProps) => <Icon {...props}><rect x="7" y="7"
 export const PlusIcon = (props: IconProps) => <Icon {...props}><path d="M12 5v14M5 12h14" /></Icon>
 export const EditIcon = (props: IconProps) => <Icon {...props}><path d="m4 16-.8 4 4-.8L18.5 7.9a2.1 2.1 0 0 0-3-3Z" /><path d="m14 6 4 4M3.2 20H9" /></Icon>
 export const TrashIcon = (props: IconProps) => <Icon {...props}><path d="M4 7h16M9 7V4h6v3M6.5 7l.8 13h9.4l.8-13M10 11v5M14 11v5" /></Icon>
+export const FolderIcon = (props: IconProps) => <Icon {...props}><path d="M3.5 6.5h6l2 2h9v10h-17z" /></Icon>
+export const GitBranchIcon = (props: IconProps) => <Icon {...props}><circle cx="6" cy="5" r="2" /><circle cx="6" cy="19" r="2" /><circle cx="18" cy="7" r="2" /><path d="M6 7v10M8 17c6 0 8-3 8-8" /></Icon>
+export const MonitorIcon = (props: IconProps) => <Icon {...props}><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></Icon>
 
 /** Compact blue whale-like product mark; clicking it returns to Harness. */
 export function DeepSeekMark() {

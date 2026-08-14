@@ -1,9 +1,10 @@
 /** Persistent per-issue workspaces and Symphony-compatible lifecycle hooks. */
 
 import { lstat, mkdir, realpath, rm } from 'node:fs/promises'
-import { spawn } from 'node:child_process'
-import { resolve } from 'node:path'
+import { execFile, spawn } from 'node:child_process'
+import { dirname, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ProjectWorkspaceSource } from '../catalog/types.ts'
 import type { TaskIssue } from '../domain/issue.ts'
 import type { WorkflowDefinition } from '../workflow/types.ts'
 import { assertContained, issueWorkspaceLeaf, resolveWorkspaceRoot } from './path-safety.ts'
@@ -16,17 +17,22 @@ export interface PreparedWorkspace {
 interface ValidatedWorkspaceTarget {
   readonly root: string
   readonly path: string
+  readonly source?: ProjectWorkspaceSource
 }
 
 const HOOK_OUTPUT_LIMIT_BYTES = 64 * 1024
 
 /** Owns all filesystem mutation below the configured WORKFLOW workspace root. */
 export class WorkspaceManager {
-  constructor(private readonly ctx: Context, private readonly workerHost = 'local') {}
+  constructor(
+    private readonly ctx: Context,
+    private readonly workerHost = 'local',
+    private readonly resolveProjectSource: () => ProjectWorkspaceSource | undefined = () => undefined,
+  ) {}
 
   /** Create or reuse one issue workspace and run `after_create` exactly once. */
   async prepare(issue: TaskIssue, workflow: WorkflowDefinition, signal?: AbortSignal): Promise<PreparedWorkspace> {
-    const root = resolveWorkspaceRoot(workflow.workspace.root)
+    const root = resolveWorkspaceRoot(workflow.workspace.root, dirname(workflow.sourcePath))
     await mkdir(root, { recursive: true })
     const rootInfo = await lstat(root)
     if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
@@ -35,6 +41,7 @@ export class WorkspaceManager {
     const canonicalRoot = await realpath(root)
     const path = resolve(canonicalRoot, issueWorkspaceLeaf(issue))
     assertContained(canonicalRoot, path)
+    const source = this.resolveProjectSource()
 
     let createdNow = false
     try {
@@ -44,11 +51,18 @@ export class WorkspaceManager {
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      await mkdir(path)
+      if (source?.strategy === 'worktree') {
+        await this.createWorktree(source, path, workflow.hooks.timeout_ms, signal)
+      } else {
+        await mkdir(path)
+      }
       createdNow = true
     }
     const canonicalPath = await realpath(path)
     assertContained(canonicalRoot, canonicalPath)
+    if (source?.strategy === 'worktree') {
+      await this.assertGitWorktree(source, canonicalPath, workflow.hooks.timeout_ms, signal)
+    }
     if (createdNow && workflow.hooks.after_create !== undefined) {
       try {
         await this.runHook('after_create', workflow.hooks.after_create, canonicalPath, issue, workflow, signal)
@@ -85,16 +99,16 @@ export class WorkspaceManager {
 
   /** Run `before_remove`, revalidate the exact target, then remove only that issue workspace. */
   async remove(issue: TaskIssue, workflow: WorkflowDefinition, signal?: AbortSignal): Promise<boolean> {
-    const beforeHook = await this.resolveExistingTarget(issue, workflow)
+    const beforeHook = await this.resolveExistingTarget(issue, workflow, signal)
     if (beforeHook === undefined) return false
     if (workflow.hooks.before_remove !== undefined) {
       await this.runHook('before_remove', workflow.hooks.before_remove, beforeHook.path, issue, workflow, signal)
     }
-    const afterHook = await this.resolveExistingTarget(issue, workflow)
+    const afterHook = await this.resolveExistingTarget(issue, workflow, signal)
     if (afterHook === undefined || !samePath(beforeHook.root, afterHook.root) || !samePath(beforeHook.path, afterHook.path)) {
       throw new Error(`workspace target changed during before_remove for ${issue.identifier}; refusing recursive removal`)
     }
-    await rm(afterHook.path, { recursive: true, force: false })
+    await this.removeValidatedTarget(afterHook, workflow.hooks.timeout_ms, signal)
     this.ctx.logger.info('dsh-dashboard: removed terminal workspace %s', afterHook.path)
     return true
   }
@@ -109,15 +123,16 @@ export class WorkspaceManager {
     if (!samePath(expected.root, current.root) || !samePath(expected.path, current.path)) {
       throw new Error(`workspace target changed while after_create was running for ${issue.identifier}`)
     }
-    await rm(current.path, { recursive: true, force: false })
+    await this.removeValidatedTarget(current, workflow.hooks.timeout_ms)
     this.ctx.logger.info('dsh-dashboard: removed incomplete workspace %s after after_create failure', current.path)
   }
 
   private async resolveExistingTarget(
     issue: TaskIssue,
     workflow: WorkflowDefinition,
+    signal?: AbortSignal,
   ): Promise<ValidatedWorkspaceTarget | undefined> {
-    const configuredRoot = resolveWorkspaceRoot(workflow.workspace.root)
+    const configuredRoot = resolveWorkspaceRoot(workflow.workspace.root, dirname(workflow.sourcePath))
     let rootInfo
     try {
       rootInfo = await lstat(configuredRoot)
@@ -143,7 +158,88 @@ export class WorkspaceManager {
     }
     const canonicalPath = await realpath(candidate)
     assertContained(canonicalRoot, canonicalPath)
-    return { root: canonicalRoot, path: canonicalPath }
+    const source = this.resolveProjectSource()
+    if (source?.strategy === 'worktree') {
+      await this.assertGitWorktree(source, canonicalPath, workflow.hooks.timeout_ms, signal)
+    }
+    return { root: canonicalRoot, path: canonicalPath, ...(source === undefined ? {} : { source }) }
+  }
+
+  private async createWorktree(
+    source: Extract<ProjectWorkspaceSource, { readonly strategy: 'worktree' }>,
+    path: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.runGit(
+      source.repositoryRoot,
+      ['worktree', 'add', '--detach', path, 'HEAD'],
+      timeoutMs,
+      signal,
+    )
+    this.ctx.logger.info('dsh-dashboard: created Git worktree %s from %s', path, source.repositoryRoot)
+  }
+
+  private async assertGitWorktree(
+    source: Extract<ProjectWorkspaceSource, { readonly strategy: 'worktree' }>,
+    path: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const [sourceCommonDirectory, targetCommonDirectory, targetRoot] = await Promise.all([
+      this.runGit(source.repositoryRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'], timeoutMs, signal),
+      this.runGit(path, ['rev-parse', '--path-format=absolute', '--git-common-dir'], timeoutMs, signal),
+      this.runGit(path, ['rev-parse', '--path-format=absolute', '--show-toplevel'], timeoutMs, signal),
+    ])
+    if (!samePath(sourceCommonDirectory, targetCommonDirectory) || !samePath(path, targetRoot)) {
+      throw new Error(`issue workspace is not a worktree of the selected repository: ${path}`)
+    }
+  }
+
+  private async removeValidatedTarget(
+    target: ValidatedWorkspaceTarget,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (target.source?.strategy === 'worktree') {
+      await this.runGit(
+        target.source.repositoryRoot,
+        ['worktree', 'remove', '--force', target.path],
+        timeoutMs,
+        signal,
+      )
+      return
+    }
+    await rm(target.path, { recursive: true, force: false })
+  }
+
+  private async runGit(
+    cwd: string,
+    args: readonly string[],
+    timeoutMs: number,
+    outerSignal?: AbortSignal,
+  ): Promise<string> {
+    const timeout = AbortSignal.timeout(timeoutMs)
+    const signal = outerSignal === undefined ? timeout : AbortSignal.any([outerSignal, timeout])
+    return await new Promise<string>((accept, reject) => {
+      execFile('git', ['-C', cwd, ...args], {
+        encoding: 'utf8',
+        maxBuffer: HOOK_OUTPUT_LIMIT_BYTES,
+        windowsHide: true,
+        signal,
+      }, (error, stdout, stderr) => {
+        if (signal.aborted) {
+          reject(signal.reason instanceof Error ? signal.reason : new Error('Git workspace operation was cancelled'))
+          return
+        }
+        if (error !== null) {
+          const detail = stderr.trim().slice(-4000)
+          reject(new Error(`git ${args.join(' ')} failed${detail === '' ? '' : `: ${detail}`}`))
+          return
+        }
+        accept(stdout.trim())
+      })
+    })
   }
 
   private async runHook(

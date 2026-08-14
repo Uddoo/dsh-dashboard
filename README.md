@@ -14,7 +14,9 @@ English | [简体中文](./README.zh-CN.md)
 - Creates one persistent workspace per task and runs configurable `after_create`, `before_run`, `after_run`, and `before_remove` lifecycle hooks.
 - Runs through native Harness Agents and continues the same Harness session up to the configured turn limit.
 - Retries failed runs with bounded exponential backoff and rechecks source state before every dispatch.
-- Adds a **Dashboard** entry to the native Harness sidebar. Board, Runtime, and Configuration expose task state, session, workspace, turns, tokens, Agent events, retries, blockers, and credential health.
+- Adds a **Dashboard** entry to the native Harness sidebar. Board, Runtime, Projects, and Configuration expose task state, session, workspace, turns, tokens, Agent events, retries, blockers, registered projects, and credential health.
+- Maintains a durable Project Catalog in Harness storage. Projects can be registered explicitly or discovered within bounded roots; scanned candidates are never registered without confirmation.
+- Models a Project separately from its Git Repository. Git projects use a worktree workspace strategy, while non-Git projects use controlled directories; autonomous task claims remain off.
 - Shows Linear-style `+` controls for the **Local** source, with create, edit, state, priority, description, and delete operations backed by an atomic Host-side JSON store.
 - Keeps external credentials on the trusted Host; credential values never enter Dashboard RPC payloads or browser state.
 
@@ -40,6 +42,8 @@ flowchart LR
     P["Linear / GitHub / Jira / Asana / GitLab"] --> S["TaskSource adapter"]
     L["Host-local task store"] --> S
     W["WORKFLOW.md"] --> O["Orchestrator"]
+    C["Project Catalog\nHarness storage domain"] --> O
+    X["Explicit registration / bounded scan"] --> C
     S --> O
     O --> M["Per-task workspace"]
     O --> A["Harness Agent session"]
@@ -50,13 +54,13 @@ flowchart LR
     D --> U["Native Harness Dashboard"]
 ```
 
-The Host plugin owns provider access, scheduling, workspaces, hooks, Agent sessions, local persistence, and runtime state. The browser receives a constrained state projection and exposes only pause/resume, stop, refresh, and Local task mutations.
+The Host plugin owns provider access, scheduling, workspaces, hooks, Agent sessions, Project Catalog persistence, local-task persistence, and runtime state. The browser receives a constrained state projection and exposes only pause/resume, stop, refresh, Catalog operations, and Local task mutations.
 
 ## Requirements
 
 - Node.js `22.19+` or `24+`
 - pnpm `11.19+` for source builds
-- DeepSeek Harness Web profile `0.1.0-rc.5` or `0.1.0-rc.6`
+- DeepSeek Harness Web profile `0.1.0-rc.6`
 - An existing Harness permission preset; the bundled row uses `workspace-write`
 - Credentials for the selected remote provider, or no credentials for Local tasks
 
@@ -67,7 +71,7 @@ This repository compiles and tests against the published Harness `0.1.0-rc.6` pa
 ### npm
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.2.0
+dsh plugin --profile web add dsh-dashboard@0.3.0
 dsh web --dump-config
 dsh web
 ```
@@ -75,7 +79,7 @@ dsh web
 Without a global CLI:
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.2.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.3.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -91,7 +95,7 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-dsh plugin --profile web add ./dsh-dashboard-0.2.0.tgz
+dsh plugin --profile web add ./dsh-dashboard-0.3.0.tgz
 dsh web
 ```
 
@@ -109,10 +113,15 @@ The package provides a standard `dsh.bundle.patch`; defaults live in [cordis.pat
 
 | Setting | Purpose |
 | --- | --- |
-| `workflowPath` | `WORKFLOW.md` path, relative to the Harness process directory unless absolute. |
-| `permissionPreset` | Explicit Harness permission preset applied to every orchestrated Agent. Required. |
-| `agentPreset` | Optional Harness Agent preset; omission selects the available roster default. |
-| `workerHost` | Host label shown in runtime observability. Defaults to `local`. |
+| `currentProject.root` | Harness-selected project root. Relative paths resolve from the Harness process directory. |
+| `currentProject.policyPath` | Project `WORKFLOW.md`, resolved from `currentProject.root`. |
+| `currentProject.registerInCatalog` | Registers the selected workspace in the Project Catalog at startup. |
+| `agentProfile.id` | Stable profile id referenced by `project.agent_profile` in the project policy. |
+| `agentProfile.permissionPreset` | Explicit Harness permission preset applied to orchestrated Agents. Required. |
+| `agentProfile.agentPreset` | Optional Harness Agent preset; omission selects the available roster default. |
+| `agentProfile.workerHost` | Host label shown in runtime observability. Defaults to `local`. |
+| `policyDefaults.*` | Global defaults for polling, workspace root, hook timeout, concurrency, turns, and retry backoff. A project's `policy` block may override them. |
+| `discovery.roots` | Bounded scan roots seeded into the Project Catalog. Each entry has an absolute `path` and `maxDepth` from 1 to 8. |
 | `linear.endpoint` / `linear.apiKeyRef` | Linear GraphQL endpoint and API-key reference. |
 | `github.endpoint` / `github.tokenRef` | GitHub REST endpoint and token reference; the endpoint can target GitHub Enterprise. |
 | `jira.emailRef` / `jira.apiTokenRef` | Jira Cloud account-email and API-token references. The site URL belongs in `WORKFLOW.md`. |
@@ -125,9 +134,25 @@ Example Web profile override:
 ```yaml
 - id: dsh-dashboard
   config:
-    workflowPath: C:\work\my-project\WORKFLOW.md
-    permissionPreset: workspace-write
-    workerHost: workstation-01
+    currentProject:
+      root: C:\work\my-project
+      policyPath: WORKFLOW.md
+      registerInCatalog: true
+    agentProfile:
+      id: default
+      permissionPreset: workspace-write
+      workerHost: workstation-01
+    policyDefaults:
+      pollingIntervalMs: 5000
+      workspaceRoot: .dsh-dashboard/workspaces
+      hookTimeoutMs: 60000
+      maxConcurrentAgents: 10
+      maxTurns: 20
+      maxRetryBackoffMs: 300000
+    discovery:
+      roots:
+        - path: C:\work
+          maxDepth: 4
     github:
       tokenRef: GITHUB_TOKEN
       endpoint: https://api.github.com
@@ -141,7 +166,7 @@ Example Web profile override:
       storePath: C:\work\dsh-dashboard\tasks.json
 ```
 
-`permissionPreset` is deliberately explicit: unattended orchestration must never silently select or elevate a sandbox or approval policy.
+`agentProfile.permissionPreset` is deliberately explicit: unattended orchestration must never silently select or elevate a sandbox or approval policy. Project discovery does not authorize execution; every stored Project has autonomous claims disabled.
 
 ## Credentials
 
@@ -184,18 +209,22 @@ Common fields:
 
 | Field | Description |
 | --- | --- |
+| `version` | Policy schema version. The current format requires `1`. |
+| `project.name` | Human-readable Project name shown in Configuration. |
+| `project.agent_profile` | Agent Profile id; it must exactly match the configured `agentProfile.id`. |
 | `tracker.kind` | `linear`, `github`, `jira`, `asana`, `gitlab`, or `local`. |
 | `tracker.provider.context_label` | Optional short project label beside the Dashboard title. |
 | `tracker.required_labels` | Labels that must all be present before dispatch. |
 | `tracker.active_states` | States eligible for Agent execution. |
 | `tracker.terminal_states` | States that stop execution and trigger safe workspace cleanup. |
-| `workspace.root` | Parent directory containing one persistent workspace per task. |
-| `hooks.timeout_ms` | Timeout applied independently to each lifecycle hook. |
-| `agent.max_concurrent_agents` | Global Agent concurrency limit. |
-| `agent.max_concurrent_agents_by_state` | Optional concurrency limits for individual source states. |
-| `agent.max_turns` | Maximum turns continued in one Harness session. |
-| `agent.max_retry_backoff_ms` | Upper bound for retry backoff. |
-| `dashboard.visible_states` | Board columns shown before the Hidden columns group. |
+| `policy.polling.interval_ms` | Project override for the global polling interval. |
+| `policy.workspace.root` | Parent directory containing one persistent workspace per task. Relative paths resolve from the policy file's directory. |
+| `policy.hooks.timeout_ms` | Timeout applied independently to each lifecycle hook. |
+| `policy.agent.max_concurrent_agents` | Project Agent concurrency limit. |
+| `policy.agent.max_concurrent_agents_by_state` | Optional concurrency limits for individual source states. |
+| `policy.agent.max_turns` | Maximum turns continued in one Harness session. |
+| `policy.agent.max_retry_backoff_ms` | Upper bound for retry backoff. |
+| `policy.dashboard.visible_states` | Board columns shown before the Hidden columns group. |
 
 Provider routing fields:
 
@@ -229,6 +258,8 @@ Local tasks are persisted by the Host, not `localStorage`. Writes are serialized
 
 Hooks run as trusted local commands inside the task workspace. Review them with the same care as build or deployment scripts.
 
+For a Git current project, the workspace is already a detached worktree of the selected repository before `after_create` runs; do not clone the repository again in that hook. A non-Git current project receives a controlled empty directory that `after_create` may initialize explicitly.
+
 ## Scheduling and workspace safety
 
 - Eligible tasks are ordered by priority, creation time, and identifier.
@@ -255,7 +286,18 @@ The plugin does not replace or duplicate the Harness sidebar.
 
 - **Board** — source-native task columns, hidden states, filtering, Local task controls, and task inspection.
 - **Runtime** — running, retrying, and blocked records with turns, token usage, worker host, and update time.
+- **Projects** — durable registered Projects and separate Repository metadata, workspace strategy, current-workspace marker, discovery roots, bounded scans, and explicit candidate confirmation.
 - **Configuration** — last-good workflow, provider context, each credential reference's health, workspace root, polling, permission preset, and Agent limits.
+
+The execution surface remains bound to the Harness-selected `currentProject`. Registering or discovering another Project makes it available in the Catalog but does not enable autonomous cross-project task claims.
+
+Durable Project Catalog loaded through the native Harness Dashboard entry:
+
+![Project Catalog inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-project-catalog-desktop.png)
+
+Bounded discovery keeps candidates behind an explicit review step:
+
+![Project discovery confirmation inside DeepSeek Harness](https://raw.githubusercontent.com/Uddoo/dsh-dashboard/main/docs/images/dashboard-project-scan-desktop.png)
 
 Local task board loaded through the native Harness Dashboard entry:
 

@@ -1,7 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { TaskIssue } from '../src/domain/issue.ts'
 import type { WorkflowDefinition } from '../src/workflow/types.ts'
@@ -42,6 +43,45 @@ describe('WorkspaceManager lifecycle safety', () => {
     expect((error as Error).message.length).toBeLessThan(5000)
     await expect(stat(join(root, issueWorkspaceLeaf(issue)))).rejects.toMatchObject({ code: 'ENOENT' })
   })
+
+  it('materializes and removes a real detached worktree for the selected Git project', async () => {
+    const parent = await temporaryDirectory()
+    const repository = join(parent, 'repository')
+    const root = join(repository, '.dsh-dashboard', 'workspaces')
+    await mkdir(repository)
+    execFileSync('git', ['init', repository], { stdio: 'ignore', windowsHide: true })
+    await writeFile(join(repository, 'tracked.txt'), 'from HEAD\n')
+    execFileSync('git', ['-C', repository, 'add', 'tracked.txt'], { stdio: 'ignore', windowsHide: true })
+    execFileSync('git', [
+      '-C', repository,
+      '-c', 'user.name=dsh-dashboard tests',
+      '-c', 'user.email=dsh-dashboard@example.invalid',
+      'commit', '-m', 'fixture',
+    ], { stdio: 'ignore', windowsHide: true })
+    const manager = new WorkspaceManager(context(), 'local', () => ({
+      strategy: 'worktree',
+      projectRoot: repository,
+      repositoryRoot: repository,
+    }))
+    const definition = workflow(root)
+
+    await expect(manager.prepare(issue, workflow(root, { after_create: 'exit 7' }))).rejects.toThrow('after_create exited with 7')
+    await expect(stat(join(root, issueWorkspaceLeaf(issue)))).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const prepared = await manager.prepare(issue, definition)
+
+    expect(prepared.createdNow).toBe(true)
+    await expect(readFile(join(prepared.path, 'tracked.txt'), 'utf8')).resolves.toMatch(/^from HEAD\r?\n$/)
+    const topLevel = execFileSync(
+      'git',
+      ['-C', prepared.path, 'rev-parse', '--path-format=absolute', '--show-toplevel'],
+      { encoding: 'utf8', windowsHide: true },
+    ).trim()
+    expect(resolve(topLevel).toLocaleLowerCase('en-US')).toBe(resolve(prepared.path).toLocaleLowerCase('en-US'))
+
+    await expect(manager.remove(issue, definition)).resolves.toBe(true)
+    await expect(stat(prepared.path)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })
 
 const issue: TaskIssue = {
@@ -57,9 +97,14 @@ const issue: TaskIssue = {
 }
 
 async function temporaryRoot(): Promise<string> {
+  const parent = await temporaryDirectory()
+  return join(parent, 'workspaces')
+}
+
+async function temporaryDirectory(): Promise<string> {
   const parent = await mkdtemp(join(tmpdir(), 'dsh-dashboard-workspace-'))
   temporaryRoots.push(parent)
-  return join(parent, 'workspaces')
+  return parent
 }
 
 function context(): Context {
@@ -70,6 +115,8 @@ function context(): Context {
 
 function workflow(root: string, hooks: Partial<WorkflowDefinition['hooks']> = {}): WorkflowDefinition {
   return {
+    version: 1,
+    project: { name: 'Test project', agent_profile: 'default' },
     tracker: {
       kind: 'linear', provider: { project_slug: 'engineering' }, required_labels: [],
       active_states: ['Todo', 'In Progress'], terminal_states: ['Done'],

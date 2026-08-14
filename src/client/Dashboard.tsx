@@ -11,6 +11,7 @@ import {
 } from 'react'
 import type { TaskIssue } from '../domain/issue.ts'
 import { issueKey } from '../domain/issue.ts'
+import type { AddDiscoveryRootInput, DiscoveryRootRecord, ProjectScanResult, RegisterProjectInput } from '../catalog/types.ts'
 import type { BoardColumn, DashboardSnapshot, IssueRuntimeView, TokenTotals } from '../runtime/types.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 import type { DashboardDataPort } from './controller.ts'
@@ -24,6 +25,9 @@ import {
   EditIcon,
   ExternalIcon,
   FilterIcon,
+  FolderIcon,
+  GitBranchIcon,
+  MonitorIcon,
   MoreIcon,
   PauseIcon,
   PlayIcon,
@@ -96,6 +100,11 @@ export function DashboardOverlay({ ui, data, openSession }: DashboardOverlayProp
         onCreateTask={input => data.createTask(input)}
         onUpdateTask={(nativeRef, changes) => data.updateTask(nativeRef, changes)}
         onDeleteTask={nativeRef => data.deleteTask(nativeRef)}
+        onAddDiscoveryRoot={input => data.addDiscoveryRoot(input)}
+        onRemoveDiscoveryRoot={id => data.removeDiscoveryRoot(id)}
+        onScanProjects={rootId => data.scanProjects(rootId)}
+        onRegisterProjectCandidate={token => data.registerProjectCandidate(token)}
+        onRegisterProject={input => data.registerProject(input)}
         onOpenSession={(sessionId) => { ui.close(); openSession(sessionId) }}
       />
     </div>
@@ -113,13 +122,23 @@ export interface DashboardSurfaceProps {
   readonly onCreateTask: (input: CreateTaskInput) => Promise<void>
   readonly onUpdateTask: (nativeRef: string, changes: UpdateTaskInput) => Promise<void>
   readonly onDeleteTask: (nativeRef: string) => Promise<void>
+  readonly onAddDiscoveryRoot: (input: AddDiscoveryRootInput) => Promise<void>
+  readonly onRemoveDiscoveryRoot: (id: string) => Promise<void>
+  readonly onScanProjects: (rootId: string) => Promise<ProjectScanResult>
+  readonly onRegisterProjectCandidate: (token: string) => Promise<void>
+  readonly onRegisterProject: (input: RegisterProjectInput) => Promise<void>
   readonly onOpenSession: (sessionId: string) => void
 }
 
-type Tab = 'board' | 'runtime' | 'configuration'
+type Tab = 'board' | 'runtime' | 'projects' | 'configuration'
 type TaskEditorState =
   | { readonly mode: 'create'; readonly state: string }
   | { readonly mode: 'edit'; readonly issue: TaskIssue }
+type CatalogDialogState =
+  | { readonly kind: 'add-root' }
+  | { readonly kind: 'register-project' }
+  | { readonly kind: 'choose-root' }
+  | { readonly kind: 'scan'; readonly result: ProjectScanResult }
 
 /** Primary view kept framework-agnostic enough for dev fixture rendering and browser QA. */
 export function DashboardSurface({
@@ -133,6 +152,11 @@ export function DashboardSurface({
   onCreateTask,
   onUpdateTask,
   onDeleteTask,
+  onAddDiscoveryRoot,
+  onRemoveDiscoveryRoot,
+  onScanProjects,
+  onRegisterProjectCandidate,
+  onRegisterProject,
   onOpenSession,
 }: DashboardSurfaceProps) {
   const [tab, setTab] = useState<Tab>('board')
@@ -142,6 +166,8 @@ export function DashboardSurface({
   const [showHidden, setShowHidden] = useState(true)
   const [taskEditor, setTaskEditor] = useState<TaskEditorState | undefined>()
   const [deleteTarget, setDeleteTarget] = useState<TaskIssue | undefined>()
+  const [catalogDialog, setCatalogDialog] = useState<CatalogDialogState | undefined>()
+  const [catalogBusy, setCatalogBusy] = useState(false)
   const deferredFilter = useDeferredValue(filter.trim().toLocaleLowerCase('en-US'))
   const issueMap = useMemo(() => {
     const map = new Map<string, TaskIssue>()
@@ -162,6 +188,27 @@ export function DashboardSurface({
   const visibleColumns = columns.filter(column => !column.hidden)
   const hiddenColumns = columns.filter(column => column.hidden)
   const context = snapshot?.context
+  const startProjectScan = async (rootId: string): Promise<void> => {
+    setCatalogDialog(undefined)
+    setCatalogBusy(true)
+    try {
+      setCatalogDialog({ kind: 'scan', result: await onScanProjects(rootId) })
+    } catch {
+      // The shared controller projects the trusted-host error into the banner.
+    } finally {
+      setCatalogBusy(false)
+    }
+  }
+  const startDiscoveryScan = (): void => {
+    const roots = snapshot?.catalog.discoveryRoots ?? []
+    if (roots.length === 0) {
+      setCatalogDialog({ kind: 'add-root' })
+    } else if (roots.length === 1) {
+      void startProjectScan(roots[0]!.id)
+    } else {
+      setCatalogDialog({ kind: 'choose-root' })
+    }
+  }
 
   return (
     <div className="dshd-shell" role="region" aria-label="Dashboard">
@@ -184,7 +231,7 @@ export function DashboardSurface({
                 </button>
                 {filterOpen ? (
                   <div className="dshd-filter-popover">
-                    <input autoFocus value={filter} onChange={event => setFilter(event.currentTarget.value)} placeholder="Filter issues" aria-label="Filter issues" />
+                    <input autoFocus value={filter} onChange={event => setFilter(event.currentTarget.value)} placeholder={tab === 'projects' ? 'Filter projects' : 'Filter issues'} aria-label={tab === 'projects' ? 'Filter projects' : 'Filter issues'} />
                     {filter !== '' ? <button type="button" onClick={() => setFilter('')}>Clear</button> : null}
                   </div>
                 ) : null}
@@ -192,9 +239,9 @@ export function DashboardSurface({
               <button type="button" className="dshd-plain-control" data-active={!showHidden || undefined} onClick={() => setShowHidden(value => !value)}>
                 <DisplayIcon size={18} /><span>Display</span>
               </button>
-              <button type="button" className="dshd-live-control" aria-label="Agent capacity">
-                <span className="dshd-dot dshd-dot-green" />
-                <span>{snapshot?.paused ? 'Paused' : 'Live'} · {snapshot?.runtime.running ?? 0}/{snapshot?.runtime.capacity ?? 0} agents</span>
+              <button type="button" className="dshd-live-control" aria-label={tab === 'projects' ? 'Dashboard mode' : 'Agent capacity'}>
+                {tab === 'projects' ? <MonitorIcon size={17} /> : <span className="dshd-dot dshd-dot-green" />}
+                <span>{tab === 'projects' ? 'Current workspace' : `${snapshot?.paused ? 'Paused' : 'Live'} · ${snapshot?.runtime.running ?? 0}/${snapshot?.runtime.capacity ?? 0} agents`}</span>
                 <ChevronIcon size={14} />
               </button>
               <button
@@ -211,11 +258,12 @@ export function DashboardSurface({
           <nav className="dshd-tabs" aria-label="Dashboard views">
             <TabButton active={tab === 'board'} onClick={() => setTab('board')}>Board</TabButton>
             <TabButton active={tab === 'runtime'} onClick={() => setTab('runtime')}>Runtime</TabButton>
+            <TabButton active={tab === 'projects'} onClick={() => setTab('projects')}>Projects</TabButton>
             <TabButton active={tab === 'configuration'} onClick={() => setTab('configuration')}>Configuration</TabButton>
           </nav>
         </header>
 
-        <RuntimeRail snapshot={snapshot} loading={loading} onRefresh={onRefresh} />
+        {tab === 'projects' ? null : <RuntimeRail snapshot={snapshot} loading={loading} onRefresh={onRefresh} />}
         {error !== undefined ? <div className="dshd-error" role="alert">{error}</div> : null}
         {snapshot?.runtime.lastError !== undefined ? <div className="dshd-warning" role="status">{snapshot.runtime.lastError}</div> : null}
 
@@ -232,6 +280,19 @@ export function DashboardSurface({
             />
           ) : null}
           {tab === 'runtime' ? <RuntimeView snapshot={snapshot} onSelect={(key) => { setSelectedKey(key); setTab('board') }} /> : null}
+          {tab === 'projects' ? (
+            <ProjectsView
+              snapshot={snapshot}
+              filter={deferredFilter}
+              showRoots={showHidden}
+              busy={loading || catalogBusy}
+              onAddRoot={() => setCatalogDialog({ kind: 'add-root' })}
+              onRemoveRoot={onRemoveDiscoveryRoot}
+              onScanRoots={startDiscoveryScan}
+              onScan={startProjectScan}
+              onRegister={() => setCatalogDialog({ kind: 'register-project' })}
+            />
+          ) : null}
           {tab === 'configuration' ? <ConfigurationView snapshot={snapshot} /> : null}
         </div>
       </section>
@@ -267,6 +328,32 @@ export function DashboardSurface({
             setDeleteTarget(undefined)
             setSelectedKey(undefined)
           }}
+        />
+      ) : null}
+      {catalogDialog?.kind === 'add-root' ? (
+        <DiscoveryRootDialog
+          onClose={() => setCatalogDialog(undefined)}
+          onSubmit={async (input) => { await onAddDiscoveryRoot(input); setCatalogDialog(undefined) }}
+        />
+      ) : null}
+      {catalogDialog?.kind === 'register-project' ? (
+        <RegisterProjectDialog
+          onClose={() => setCatalogDialog(undefined)}
+          onSubmit={async (input) => { await onRegisterProject(input); setCatalogDialog(undefined) }}
+        />
+      ) : null}
+      {catalogDialog?.kind === 'choose-root' ? (
+        <DiscoveryRootPickerDialog
+          roots={snapshot?.catalog.discoveryRoots ?? []}
+          onClose={() => setCatalogDialog(undefined)}
+          onSelect={rootId => { void startProjectScan(rootId) }}
+        />
+      ) : null}
+      {catalogDialog?.kind === 'scan' ? (
+        <ProjectScanDialog
+          result={catalogDialog.result}
+          onClose={() => setCatalogDialog(undefined)}
+          onRegister={onRegisterProjectCandidate}
         />
       ) : null}
     </div>
@@ -674,14 +761,245 @@ function RuntimeView({ snapshot, onSelect }: { readonly snapshot?: DashboardSnap
   )
 }
 
+function ProjectsView({ snapshot, filter, showRoots, busy, onAddRoot, onRemoveRoot, onScanRoots, onScan, onRegister }: {
+  readonly snapshot?: DashboardSnapshot | undefined
+  readonly filter: string
+  readonly showRoots: boolean
+  readonly busy: boolean
+  readonly onAddRoot: () => void
+  readonly onRemoveRoot: (id: string) => Promise<void>
+  readonly onScanRoots: () => void
+  readonly onScan: (rootId: string) => Promise<void>
+  readonly onRegister: () => void
+}) {
+  const catalog = snapshot?.catalog
+  const projects = (catalog?.projects ?? []).filter(project => {
+    if (filter === '') return true
+    const repositories = project.repositories.map(repository => `${repository.root} ${repository.remoteUrl ?? ''}`).join(' ')
+    return `${project.name} ${project.root} ${project.policyPath ?? ''} ${repositories}`.toLocaleLowerCase('en-US').includes(filter)
+  })
+  const roots = catalog?.discoveryRoots ?? []
+  return (
+    <div className="dshd-projects-view">
+      <header className="dshd-projects-heading">
+        <div><h2>Projects</h2><p>Registered workspaces available to Dashboard and Agents.</p></div>
+        <div className="dshd-project-actions">
+          <button type="button" disabled={busy} onClick={onScanRoots}><RefreshIcon size={15} />Scan roots</button>
+          <button type="button" className="dshd-project-primary" disabled={busy} onClick={onRegister}><PlusIcon size={16} />Register project</button>
+        </div>
+      </header>
+      <div className="dshd-project-summary" aria-label="Project Catalog summary">
+        <span>{catalog?.projects.length ?? 0} registered</span><span className="dshd-divider" />
+        <span>{roots.length} discovery {roots.length === 1 ? 'root' : 'roots'}</span><span className="dshd-divider" />
+        <span>Global Broker off</span>
+      </div>
+      <div className="dshd-project-table-scroll">
+        <div className="dshd-project-table" role="table" aria-label="Registered projects">
+          <div className="dshd-project-table-head" role="row">
+            <span>Project</span><span>Workspace</span><span>Repository</span><span>Policy</span><span>Autonomous claims</span><span>Updated</span><span />
+          </div>
+          {projects.map(project => {
+            const repository = project.repositories[0]
+            return (
+              <div className="dshd-project-row" role="row" key={project.id} data-current={project.currentWorkspace || undefined}>
+                <strong>{project.name}{project.currentWorkspace ? <small>Current</small> : null}</strong>
+                <span className="dshd-mono" title={project.root}>{project.root}</span>
+                <span title={repository?.remoteUrl ?? repository?.root}>{repository === undefined ? 'Not a Git repository' : <><GitBranchIcon size={15} />{repository.remoteUrl ?? repository.root}</>}</span>
+                <span>{project.policyPath === undefined ? 'None' : pathLeaf(project.policyPath)}</span>
+                <span>{project.autonomousClaims ? 'On' : 'Off'}</span>
+                <span>{relativeTime(project.updatedAt)}</span>
+                <span className="dshd-project-more"><MoreIcon size={16} /></span>
+              </div>
+            )
+          })}
+          {projects.length === 0 ? <div className="dshd-table-empty">No registered projects match this filter.</div> : null}
+        </div>
+      </div>
+      {showRoots ? (
+        <section className="dshd-discovery-roots">
+          <header><h3>Discovery roots</h3><button type="button" onClick={onAddRoot}>Manage roots</button></header>
+          {roots.map(root => (
+            <div className="dshd-discovery-root" key={root.id}>
+              <span><FolderIcon size={17} /><code>{root.path}</code></span>
+              <span>Manual confirmation required&nbsp;&nbsp;·&nbsp;&nbsp;Max depth {root.maxDepth}</span>
+              <span>{relativeTime(root.updatedAt)}</span>
+              <button type="button" aria-label={`Scan ${root.path}`} title="Scan root" disabled={busy} onClick={() => { void onScan(root.id) }}><RefreshIcon size={15} /></button>
+              <button type="button" aria-label={`Remove ${root.path}`} title="Remove root" disabled={busy} onClick={() => { void onRemoveRoot(root.id).catch(() => undefined) }}><TrashIcon size={15} /></button>
+            </div>
+          ))}
+          {roots.length === 0 ? <div className="dshd-table-empty">No discovery roots. Add one to scan for candidate projects.</div> : null}
+        </section>
+      ) : null}
+    </div>
+  )
+}
+
+function DiscoveryRootPickerDialog({ roots, onClose, onSelect }: {
+  readonly roots: readonly DiscoveryRootRecord[]
+  readonly onClose: () => void
+  readonly onSelect: (rootId: string) => void
+}) {
+  return (
+    <div className="dshd-modal" role="presentation">
+      <section className="dshd-catalog-dialog dshd-catalog-small" role="dialog" aria-modal="true" aria-labelledby="dshd-root-picker-title" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+        <header><div><h2 id="dshd-root-picker-title">Choose discovery root</h2><p>Select one bounded directory to scan for project candidates.</p></div><button type="button" aria-label="Close" onClick={onClose}><CloseIcon size={18} /></button></header>
+        <div className="dshd-root-choices">
+          {roots.map(root => (
+            <button type="button" key={root.id} onClick={() => onSelect(root.id)}>
+              <span><FolderIcon size={17} /><code>{root.path}</code></span>
+              <small>Maximum depth {root.maxDepth}<ChevronIcon size={15} /></small>
+            </button>
+          ))}
+        </div>
+        <footer><button type="button" onClick={onClose}>Cancel</button></footer>
+      </section>
+    </div>
+  )
+}
+
+function DiscoveryRootDialog({ onClose, onSubmit }: {
+  readonly onClose: () => void
+  readonly onSubmit: (input: AddDiscoveryRootInput) => Promise<void>
+}) {
+  const [path, setPath] = useState('')
+  const [maxDepth, setMaxDepth] = useState('4')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    setSaving(true)
+    setError(undefined)
+    try {
+      await onSubmit({ path: path.trim(), maxDepth: Number(maxDepth) })
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError))
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="dshd-modal" role="presentation">
+      <form className="dshd-catalog-dialog dshd-catalog-small" role="dialog" aria-modal="true" aria-labelledby="dshd-root-title" onSubmit={event => { void submit(event) }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+        <header><div><h2 id="dshd-root-title">Add discovery root</h2><p>Scanning stays inside this directory and never follows symbolic links.</p></div><button type="button" aria-label="Close" onClick={onClose}><CloseIcon size={18} /></button></header>
+        <div className="dshd-catalog-fields">
+          <label><span>Absolute directory path</span><input autoFocus required value={path} onChange={event => setPath(event.currentTarget.value)} placeholder="F:\\Dev\\Code" /></label>
+          <label><span>Maximum scan depth</span><input required type="number" min="1" max="8" value={maxDepth} onChange={event => setMaxDepth(event.currentTarget.value)} /></label>
+          {error === undefined ? null : <div className="dshd-editor-error" role="alert">{error}</div>}
+        </div>
+        <footer><button type="button" disabled={saving} onClick={onClose}>Cancel</button><button type="submit" className="dshd-primary" disabled={saving || path.trim() === ''}>{saving ? 'Adding…' : 'Add root'}</button></footer>
+      </form>
+    </div>
+  )
+}
+
+function RegisterProjectDialog({ onClose, onSubmit }: {
+  readonly onClose: () => void
+  readonly onSubmit: (input: RegisterProjectInput) => Promise<void>
+}) {
+  const [path, setPath] = useState('')
+  const [name, setName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const submit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    setSaving(true)
+    setError(undefined)
+    try {
+      await onSubmit({ path: path.trim(), ...(name.trim() === '' ? {} : { name: name.trim() }) })
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError))
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="dshd-modal" role="presentation">
+      <form className="dshd-catalog-dialog dshd-catalog-small" role="dialog" aria-modal="true" aria-labelledby="dshd-register-title" onSubmit={event => { void submit(event) }} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+        <header><div><h2 id="dshd-register-title">Register project</h2><p>Explicitly add an existing Harness workspace to the Project Catalog.</p></div><button type="button" aria-label="Close" onClick={onClose}><CloseIcon size={18} /></button></header>
+        <div className="dshd-catalog-fields">
+          <label><span>Absolute project path</span><input autoFocus required value={path} onChange={event => setPath(event.currentTarget.value)} placeholder="F:\\Dev\\Code\\my-project" /></label>
+          <label><span>Display name <small>Optional</small></span><input maxLength={200} value={name} onChange={event => setName(event.currentTarget.value)} placeholder="Derived from the folder name" /></label>
+          {error === undefined ? null : <div className="dshd-editor-error" role="alert">{error}</div>}
+        </div>
+        <footer><button type="button" disabled={saving} onClick={onClose}>Cancel</button><button type="submit" className="dshd-primary" disabled={saving || path.trim() === ''}>{saving ? 'Registering…' : 'Register project'}</button></footer>
+      </form>
+    </div>
+  )
+}
+
+function ProjectScanDialog({ result, onClose, onRegister }: {
+  readonly result: ProjectScanResult
+  readonly onClose: () => void
+  readonly onRegister: (token: string) => Promise<void>
+}) {
+  const available = result.candidates.filter(candidate => candidate.alreadyRegisteredProjectId === undefined)
+  const [selected, setSelected] = useState(() => new Set(available.map(candidate => candidate.token)))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const submit = async (): Promise<void> => {
+    setSaving(true)
+    setError(undefined)
+    try {
+      for (const candidate of available) {
+        if (!selected.has(candidate.token)) continue
+        await onRegister(candidate.token)
+        setSelected(current => {
+          const next = new Set(current)
+          next.delete(candidate.token)
+          return next
+        })
+      }
+      onClose()
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : String(submitError))
+      setSaving(false)
+    }
+  }
+  const toggle = (token: string): void => {
+    setSelected(current => {
+      const next = new Set(current)
+      if (next.has(token)) next.delete(token)
+      else next.add(token)
+      return next
+    })
+  }
+  return (
+    <div className="dshd-modal" role="presentation">
+      <section className="dshd-catalog-dialog dshd-scan-dialog" role="dialog" aria-modal="true" aria-labelledby="dshd-scan-title" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose() } }}>
+        <header><div><h2 id="dshd-scan-title">Scan discovery roots</h2><p>Review candidates before adding them to the Project Catalog.</p></div><button type="button" aria-label="Close" onClick={onClose}><CloseIcon size={18} /></button></header>
+        <div className="dshd-scan-content">
+          <label className="dshd-readonly-field"><span>Discovery root</span><input readOnly value={result.root.path} /></label>
+          <div className="dshd-candidate-label">Candidates</div>
+          <div className="dshd-candidate-table" role="table" aria-label="Project candidates">
+            <div className="dshd-candidate-head" role="row"><span /><span>Name</span><span>Path</span><span>Metadata</span></div>
+            {result.candidates.map(candidate => {
+              const disabled = candidate.alreadyRegisteredProjectId !== undefined
+              return (
+                <label className="dshd-candidate-row" role="row" key={candidate.token} data-disabled={disabled || undefined}>
+                  <input type="checkbox" disabled={disabled || saving} checked={!disabled && selected.has(candidate.token)} onChange={() => toggle(candidate.token)} />
+                  <strong>{candidate.name}</strong><span className="dshd-mono" title={candidate.path}>{candidate.path}</span>
+                  <span>{disabled ? 'Already registered' : `${candidate.repository === undefined ? 'Directory' : 'Git repository'}${candidate.policyPath === undefined ? '' : ' · WORKFLOW.md'}`}</span>
+                </label>
+              )
+            })}
+            {result.candidates.length === 0 ? <div className="dshd-table-empty">No project candidates found within this root.</div> : null}
+          </div>
+          <div className="dshd-candidate-status">{available.length} new {available.length === 1 ? 'candidate' : 'candidates'}{result.truncated ? ' · Scan limit reached' : ''}</div>
+          {error === undefined ? null : <div className="dshd-editor-error" role="alert">{error}</div>}
+        </div>
+        <footer><button type="button" disabled={saving} onClick={onClose}>Cancel</button><button type="button" className="dshd-primary" disabled={saving || selected.size === 0} onClick={() => { void submit() }}>{saving ? 'Registering…' : 'Register selected'}</button></footer>
+      </section>
+    </div>
+  )
+}
+
 function ConfigurationView({ snapshot }: { readonly snapshot?: DashboardSnapshot | undefined }) {
   const config = snapshot?.configuration
   return (
     <div className="dshd-config-view">
-      <header><h2>Configuration</h2><p>Current last-good workflow and Harness integration boundaries.</p></header>
+      <header><h2>Configuration</h2><p>Resolved project policy and Harness integration boundaries.</p></header>
       <section>
         <h3>Workflow</h3>
         <ConfigRow label="Path" value={config?.workflowPath} mono />
+        <ConfigRow label="Project" value={config?.projectName} />
         <ConfigRow label="Loaded" value={relativeTime(config?.workflowLoadedAt)} />
         <ConfigRow label="Polling" value={config?.pollingIntervalMs === undefined ? '—' : `${config.pollingIntervalMs.toLocaleString('en-US')} ms`} />
         <ConfigRow label="Workspace root" value={config?.workspaceRoot} mono />
@@ -704,6 +1022,7 @@ function ConfigurationView({ snapshot }: { readonly snapshot?: DashboardSnapshot
       </section>
       <section>
         <h3>Harness Agent</h3>
+        <ConfigRow label="Profile" value={config?.agentProfile} mono />
         <ConfigRow label="Permission preset" value={config?.permissionPreset} mono />
         <ConfigRow label="Agent preset" value={config?.agentPreset ?? 'Harness default'} mono />
         <ConfigRow label="Concurrency" value={config?.maxConcurrentAgents?.toString()} />
@@ -741,6 +1060,11 @@ function priorityTone(priority?: number): string {
 
 function compactNumber(value: number): string {
   return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(value)
+}
+
+function pathLeaf(value: string): string {
+  const parts = value.split(/[\\/]/u).filter(Boolean)
+  return parts.at(-1) ?? value
 }
 
 function relativeTime(value?: string): string {

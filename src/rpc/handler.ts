@@ -1,17 +1,22 @@
 /** Trusted-host Connection RPC adapter for the Dashboard client. */
 
 import type { DashboardOrchestrator } from '../orchestrator/orchestrator.ts'
+import type { ProjectCatalog } from '../catalog/catalog.ts'
 import type { RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 
 /** Dispatch the intentionally small Dashboard RPC surface. */
 export async function handleDashboardRpc(
   orchestrator: DashboardOrchestrator,
+  catalog: ProjectCatalog,
   endpoint: string,
   payload: unknown,
   signal: AbortSignal,
+  ready: Promise<void> = Promise.resolve(),
 ): Promise<RpcResult<unknown>> {
   if (signal.aborted) return failure('cancelled', 'Dashboard request was cancelled')
   try {
+    await ready
+    if (signal.aborted) return failure('cancelled', 'Dashboard request was cancelled')
     switch (endpoint) {
       case 'state':
         return success(await orchestrator.snapshot())
@@ -56,10 +61,46 @@ export async function handleDashboardRpc(
         if (!await orchestrator.deleteTask(nativeRef, signal)) return badRequest(`unknown local task ${JSON.stringify(nativeRef)}`)
         return success(await orchestrator.snapshot())
       }
+      case 'addDiscoveryRoot': {
+        const path = readStringField(payload, 'path')
+        const maxDepth = readOptionalInteger(payload, 'maxDepth', 1, 8)
+        if (path === undefined) return badRequest('addDiscoveryRoot requires a non-empty `path`')
+        if (maxDepth === false) return badRequest('addDiscoveryRoot `maxDepth` must be an integer from 1 to 8')
+        await catalog.addDiscoveryRoot({ path, ...(maxDepth === undefined ? {} : { maxDepth }) })
+        return success(await orchestrator.snapshot())
+      }
+      case 'removeDiscoveryRoot': {
+        const id = readStringField(payload, 'id')
+        if (id === undefined) return badRequest('removeDiscoveryRoot requires a non-empty `id`')
+        if (!await catalog.removeDiscoveryRoot(id)) return badRequest(`unknown discovery root ${JSON.stringify(id)}`)
+        return success(await orchestrator.snapshot())
+      }
+      case 'scanProjects': {
+        const rootId = readStringField(payload, 'rootId')
+        if (rootId === undefined) return badRequest('scanProjects requires a non-empty `rootId`')
+        return success(await catalog.scan(rootId, signal))
+      }
+      case 'registerProjectCandidate': {
+        const token = readStringField(payload, 'token')
+        if (token === undefined) return badRequest('registerProjectCandidate requires a non-empty `token`')
+        await catalog.registerCandidate(token)
+        return success(await orchestrator.snapshot())
+      }
+      case 'registerProject': {
+        const path = readStringField(payload, 'path')
+        const name = readOptionalString(payload, 'name')
+        if (path === undefined) return badRequest('registerProject requires a non-empty `path`')
+        if (name === false) return badRequest('registerProject `name` must be a non-empty string when provided')
+        await catalog.registerProject({ path, ...(name === undefined ? {} : { name }) })
+        return success(await orchestrator.snapshot())
+      }
       default:
         return badRequest(`unknown Dashboard endpoint ${JSON.stringify(endpoint)}`)
     }
   } catch (error) {
+    if (signal.aborted) {
+      return failure('cancelled', signal.reason instanceof Error ? signal.reason.message : 'Dashboard request was cancelled')
+    }
     return failure('internal', error instanceof Error ? error.message : String(error))
   }
 }
@@ -160,6 +201,13 @@ function readOptionalTimestamp(value: unknown, key: string): string | undefined 
   return typeof field === 'string' && field.trim() !== '' && Number.isFinite(Date.parse(field))
     ? new Date(field).toISOString()
     : false
+}
+
+function readOptionalInteger(value: unknown, key: string, minimum: number, maximum: number): number | undefined | false {
+  const object = readObject(value)
+  if (object === undefined || !(key in object)) return undefined
+  const field = object[key]
+  return typeof field === 'number' && Number.isInteger(field) && field >= minimum && field <= maximum ? field : false
 }
 
 function readBooleanField(value: unknown, key: string): boolean | undefined {

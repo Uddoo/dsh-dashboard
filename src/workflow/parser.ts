@@ -1,50 +1,63 @@
-/** WORKFLOW.md frontmatter parser and validator. */
+/** Breaking v1 project-policy frontmatter parser and layered resolver. */
 
 import { load as loadYaml } from 'js-yaml'
 import { z } from 'zod'
+import type { AgentProfileConfig, PolicyDefaultsConfig } from '../config.ts'
 import type { WorkflowDefinition } from './types.ts'
 
 const nonBlank = z.string().trim().min(1)
 
 const schema = z.object({
+  version: z.literal(1),
+  project: z.object({
+    name: nonBlank,
+    agent_profile: nonBlank,
+  }).strict(),
   tracker: z.object({
-    kind: nonBlank.default('linear'),
+    kind: nonBlank,
     provider: z.record(z.string(), z.unknown()),
     required_labels: z.array(nonBlank).default([]),
-    active_states: z.array(nonBlank).min(1).default(['Todo', 'In Progress']),
-    terminal_states: z.array(nonBlank).min(1).default(['Closed', 'Cancelled', 'Canceled', 'Duplicate', 'Done']),
-  }),
-  polling: z.object({
-    interval_ms: z.number().int().positive().default(5000),
-  }).default({ interval_ms: 5000 }),
-  workspace: z.object({
-    root: nonBlank,
-  }),
-  hooks: z.object({
-    after_create: z.string().min(1).optional(),
-    before_run: z.string().min(1).optional(),
-    after_run: z.string().min(1).optional(),
-    before_remove: z.string().min(1).optional(),
-    timeout_ms: z.number().int().positive().default(60000),
-  }).default({ timeout_ms: 60000 }),
-  agent: z.object({
-    max_concurrent_agents: z.number().int().positive().default(10),
-    max_concurrent_agents_by_state: z.record(z.string(), z.number().int().positive()).default({}),
-    max_turns: z.number().int().positive().default(20),
-    max_retry_backoff_ms: z.number().int().positive().default(300000),
-  }).default({
-    max_concurrent_agents: 10,
-    max_concurrent_agents_by_state: {},
-    max_turns: 20,
-    max_retry_backoff_ms: 300000,
-  }),
-  dashboard: z.object({
-    visible_states: z.array(nonBlank).default([]),
-  }).default({ visible_states: [] }),
-})
+    active_states: z.array(nonBlank).min(1),
+    terminal_states: z.array(nonBlank).min(1),
+  }).strict(),
+  policy: z.object({
+    polling: z.object({
+      interval_ms: z.number().int().positive().optional(),
+    }).strict().optional(),
+    workspace: z.object({
+      root: nonBlank.optional(),
+    }).strict().optional(),
+    hooks: z.object({
+      after_create: z.string().min(1).optional(),
+      before_run: z.string().min(1).optional(),
+      after_run: z.string().min(1).optional(),
+      before_remove: z.string().min(1).optional(),
+      timeout_ms: z.number().int().positive().optional(),
+    }).strict().optional(),
+    agent: z.object({
+      max_concurrent_agents: z.number().int().positive().optional(),
+      max_concurrent_agents_by_state: z.record(z.string(), z.number().int().positive()).optional(),
+      max_turns: z.number().int().positive().optional(),
+      max_retry_backoff_ms: z.number().int().positive().optional(),
+    }).strict().optional(),
+    dashboard: z.object({
+      visible_states: z.array(nonBlank).optional(),
+    }).strict().optional(),
+  }).strict().default({}),
+}).strict()
 
-/** Parse exactly one YAML-frontmatter document and preserve its Markdown body. */
-export function parseWorkflow(text: string, sourcePath: string, now = new Date()): WorkflowDefinition {
+export interface WorkflowParseOptions {
+  readonly defaults: PolicyDefaultsConfig
+  readonly agentProfile: AgentProfileConfig
+}
+
+/** Parse one v1 project policy and resolve global defaults plus its Agent Profile. */
+export function parseWorkflow(
+  text: string,
+  sourcePath: string,
+  options: WorkflowParseOptions,
+  now = new Date(),
+): WorkflowDefinition {
   const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
   if (!normalized.startsWith('---\n')) {
     throw new Error('WORKFLOW.md must start with a YAML frontmatter delimiter (`---`)')
@@ -71,8 +84,15 @@ export function parseWorkflow(text: string, sourcePath: string, now = new Date()
     throw new Error(`WORKFLOW.md configuration is invalid: ${message}`)
   }
   const value = parsed.data
+  if (value.project.agent_profile !== options.agentProfile.id) {
+    throw new Error(
+      `WORKFLOW.md project.agent_profile ${JSON.stringify(value.project.agent_profile)} is not configured; expected ${JSON.stringify(options.agentProfile.id)}`,
+    )
+  }
   const provider = normalizeProvider(value.tracker.kind, value.tracker.provider)
   return {
+    version: 1,
+    project: value.project,
     tracker: {
       kind: value.tracker.kind,
       provider,
@@ -80,17 +100,28 @@ export function parseWorkflow(text: string, sourcePath: string, now = new Date()
       active_states: value.tracker.active_states,
       terminal_states: value.tracker.terminal_states,
     },
-    polling: value.polling,
-    workspace: value.workspace,
-    hooks: {
-      ...(value.hooks.after_create === undefined ? {} : { after_create: value.hooks.after_create }),
-      ...(value.hooks.before_run === undefined ? {} : { before_run: value.hooks.before_run }),
-      ...(value.hooks.after_run === undefined ? {} : { after_run: value.hooks.after_run }),
-      ...(value.hooks.before_remove === undefined ? {} : { before_remove: value.hooks.before_remove }),
-      timeout_ms: value.hooks.timeout_ms,
+    polling: {
+      interval_ms: value.policy.polling?.interval_ms ?? options.defaults.pollingIntervalMs,
     },
-    agent: value.agent,
-    dashboard: value.dashboard,
+    workspace: {
+      root: value.policy.workspace?.root ?? options.defaults.workspaceRoot,
+    },
+    hooks: {
+      ...(value.policy.hooks?.after_create === undefined ? {} : { after_create: value.policy.hooks.after_create }),
+      ...(value.policy.hooks?.before_run === undefined ? {} : { before_run: value.policy.hooks.before_run }),
+      ...(value.policy.hooks?.after_run === undefined ? {} : { after_run: value.policy.hooks.after_run }),
+      ...(value.policy.hooks?.before_remove === undefined ? {} : { before_remove: value.policy.hooks.before_remove }),
+      timeout_ms: value.policy.hooks?.timeout_ms ?? options.defaults.hookTimeoutMs,
+    },
+    agent: {
+      max_concurrent_agents: value.policy.agent?.max_concurrent_agents ?? options.defaults.maxConcurrentAgents,
+      max_concurrent_agents_by_state: value.policy.agent?.max_concurrent_agents_by_state ?? {},
+      max_turns: value.policy.agent?.max_turns ?? options.defaults.maxTurns,
+      max_retry_backoff_ms: value.policy.agent?.max_retry_backoff_ms ?? options.defaults.maxRetryBackoffMs,
+    },
+    dashboard: {
+      visible_states: value.policy.dashboard?.visible_states ?? [],
+    },
     prompt,
     sourcePath,
     loadedAt: now.toISOString(),
@@ -124,10 +155,8 @@ function normalizeProvider(kindValue: string, value: Readonly<Record<string, unk
       throw new Error(`WORKFLOW.md configuration is invalid: tracker.provider.${field}: expected a non-empty string`)
     }
   }
-  if (provider.state_labels !== undefined) {
-    if (!isStringRecord(provider.state_labels)) {
-      throw new Error('WORKFLOW.md configuration is invalid: tracker.provider.state_labels: expected a state-to-label string map')
-    }
+  if (provider.state_labels !== undefined && !isStringRecord(provider.state_labels)) {
+    throw new Error('WORKFLOW.md configuration is invalid: tracker.provider.state_labels: expected a state-to-label string map')
   }
   if (kind === 'local' && (typeof provider.project_id !== 'string' || provider.project_id.trim() === '')) {
     provider.project_id = 'local'

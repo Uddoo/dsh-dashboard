@@ -1,6 +1,8 @@
 /** Poll, reconcile, claim, dispatch, continue, retry, and observe normalized tasks. */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { dirname } from 'node:path'
+import type { ProjectCatalog } from '../catalog/catalog.ts'
 import type { TaskIssue } from '../domain/issue.ts'
 import { hasRequiredLabels, issueKey, normalizedState } from '../domain/issue.ts'
 import type { HarnessAgentRunner } from '../agent/harness-runner.ts'
@@ -16,6 +18,7 @@ import type { CreateTaskInput, TaskSourceRegistry, UpdateTaskInput } from '../ta
 import type { WorkflowStore } from '../workflow/store.ts'
 import type { WorkflowDefinition } from '../workflow/types.ts'
 import type { WorkspaceManager } from '../workspace/manager.ts'
+import { resolveWorkspaceRoot } from '../workspace/path-safety.ts'
 import { compareCandidates, failureRetryDelay, stateLimit } from './scheduling.ts'
 
 interface RunningRecord {
@@ -35,6 +38,7 @@ interface RetryRecord {
 }
 
 export interface OrchestratorConfig {
+  readonly agentProfile: string
   readonly permissionPreset: string
   readonly agentPreset?: string
   readonly workerHost: string
@@ -62,6 +66,7 @@ export class DashboardOrchestrator {
     private readonly sources: TaskSourceRegistry,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: HarnessAgentRunner,
+    private readonly catalog: ProjectCatalog,
     private readonly config: OrchestratorConfig,
   ) {}
 
@@ -115,7 +120,7 @@ export class DashboardOrchestrator {
     const runtimeIssues = [...this.runtimeArchive.values()].sort(runtimeOrder)
     const totals = runtimeIssues.reduce((sum, item) => addTokens(sum, item.tokens), emptyTokens())
     return {
-      version: 1,
+      version: 2,
       generatedAt: new Date().toISOString(),
       ...(context === undefined ? {} : { context }),
       taskMutations: {
@@ -144,9 +149,10 @@ export class DashboardOrchestrator {
         workflowPath: this.workflow.path,
         ...(definition === undefined ? {} : {
           workflowLoadedAt: definition.loadedAt,
+          projectName: definition.project.name,
           trackerKind: definition.tracker.kind,
           ...(context === undefined ? {} : { projectRef: context.projectRef }),
-          workspaceRoot: definition.workspace.root,
+          workspaceRoot: resolveWorkspaceRoot(definition.workspace.root, dirname(definition.sourcePath)),
           maxConcurrentAgents: definition.agent.max_concurrent_agents,
           maxTurns: definition.agent.max_turns,
           pollingIntervalMs: definition.polling.interval_ms,
@@ -154,6 +160,7 @@ export class DashboardOrchestrator {
         ...(workflowStatus.error === undefined ? {} : { workflowError: workflowStatus.error }),
         activeStates: definition?.tracker.active_states ?? [],
         terminalStates: definition?.tracker.terminal_states ?? [],
+        agentProfile: this.config.agentProfile,
         permissionPreset: this.config.permissionPreset,
         ...(this.config.agentPreset === undefined ? {} : { agentPreset: this.config.agentPreset }),
         credentials,
@@ -164,6 +171,7 @@ export class DashboardOrchestrator {
           credentialWritable: firstCredential.writable,
         }),
       },
+      catalog: this.catalog.snapshot(),
     }
   }
 

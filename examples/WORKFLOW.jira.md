@@ -1,4 +1,8 @@
 ---
+version: 1
+project:
+  name: your-jira-project
+  agent_profile: default
 tracker:
   kind: jira
   provider:
@@ -10,21 +14,21 @@ tracker:
   required_labels: []
   active_states: [To Do, In Progress, In Review]
   terminal_states: [Done, Canceled]
-polling:
-  interval_ms: 5000
-workspace:
-  root: ~/.dsh-dashboard/workspaces
-hooks:
-  timeout_ms: 60000
-  after_create: |
-    git clone --depth 1 https://github.com/your-org/your-repository.git .
-agent:
-  max_concurrent_agents: 6
-  max_concurrent_agents_by_state: {}
-  max_turns: 20
-  max_retry_backoff_ms: 300000
-dashboard:
-  visible_states: [Backlog, To Do, In Progress, In Review]
+policy:
+  polling:
+    interval_ms: 5000
+  workspace:
+    root: .dsh-dashboard/workspaces
+  hooks:
+    timeout_ms: 60000
+    # Git projects are already materialized as detached worktrees here.
+  agent:
+    max_concurrent_agents: 6
+    max_concurrent_agents_by_state: {}
+    max_turns: 20
+    max_retry_backoff_ms: 300000
+  dashboard:
+    visible_states: [Backlog, To Do, In Progress, In Review]
 ---
 
 Work on {{ issue.identifier }}: {{ issue.title }}.

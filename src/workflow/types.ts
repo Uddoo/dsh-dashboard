@@ -36,7 +36,14 @@ export interface WorkflowDashboard {
   readonly visible_states: readonly string[]
 }
 
+export interface WorkflowProject {
+  readonly name: string
+  readonly agent_profile: string
+}
+
 export interface WorkflowDefinition {
+  readonly version: 1
+  readonly project: WorkflowProject
   readonly tracker: WorkflowTracker
   readonly polling: WorkflowPolling
   readonly workspace: WorkflowWorkspace

@@ -1,6 +1,12 @@
 /** Lossless-JSON Host ↔ Dashboard protocol. */
 
 import type { TaskIssue, TaskSourceContext } from '../domain/issue.ts'
+import type {
+  AddDiscoveryRootInput,
+  ProjectCatalogView,
+  ProjectScanResult,
+  RegisterProjectInput,
+} from '../catalog/types.ts'
 import type { CreateTaskInput, TaskSourceCredentialStatus, UpdateTaskInput } from '../task-source/index.ts'
 
 export interface TokenTotals {
@@ -61,6 +67,7 @@ export interface DashboardConfigurationView {
   readonly workflowLoadedAt?: string
   readonly workflowError?: string
   readonly trackerKind?: string
+  readonly projectName?: string
   readonly projectRef?: string
   readonly activeStates: readonly string[]
   readonly terminalStates: readonly string[]
@@ -69,6 +76,7 @@ export interface DashboardConfigurationView {
   readonly maxTurns?: number
   readonly pollingIntervalMs?: number
   readonly permissionPreset: string
+  readonly agentProfile?: string
   readonly agentPreset?: string
   readonly credentials: readonly TaskSourceCredentialStatus[]
   /** Compatibility projection for clients built against 0.1.x. */
@@ -79,7 +87,7 @@ export interface DashboardConfigurationView {
 }
 
 export interface DashboardSnapshot {
-  readonly version: 1
+  readonly version: 2
   readonly generatedAt: string
   readonly context?: TaskSourceContext
   readonly taskMutations: {
@@ -105,6 +113,7 @@ export interface DashboardSnapshot {
     readonly issues: readonly IssueRuntimeView[]
   }
   readonly configuration: DashboardConfigurationView
+  readonly catalog: ProjectCatalogView
 }
 
 export interface IssueDetailView {
@@ -121,6 +130,11 @@ export interface DashboardRpcMap {
   readonly createTask: { input: CreateTaskInput; output: DashboardSnapshot }
   readonly updateTask: { input: { nativeRef: string; changes: UpdateTaskInput }; output: DashboardSnapshot }
   readonly deleteTask: { input: { nativeRef: string }; output: DashboardSnapshot }
+  readonly addDiscoveryRoot: { input: AddDiscoveryRootInput; output: DashboardSnapshot }
+  readonly removeDiscoveryRoot: { input: { id: string }; output: DashboardSnapshot }
+  readonly scanProjects: { input: { rootId: string }; output: ProjectScanResult }
+  readonly registerProjectCandidate: { input: { token: string }; output: DashboardSnapshot }
+  readonly registerProject: { input: RegisterProjectInput; output: DashboardSnapshot }
 }
 
 export function emptyTokens(): TokenTotals {

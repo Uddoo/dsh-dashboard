@@ -5,6 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DashboardSurface } from '../src/client/Dashboard.tsx'
 import { fixtureSnapshot } from '../src/client/fixture.ts'
 
+const catalogCallbacks = {
+  onAddDiscoveryRoot: async () => {},
+  onRemoveDiscoveryRoot: async () => {},
+  onScanProjects: async () => ({ root: fixtureSnapshot.catalog.discoveryRoots[0]!, candidates: [], truncated: false }),
+  onRegisterProjectCandidate: async () => {},
+  onRegisterProject: async () => {},
+}
+
 afterEach(cleanup)
 
 describe('Dashboard local task interactions', () => {
@@ -18,6 +26,7 @@ describe('Dashboard local task interactions', () => {
     } as const
     render(
       <DashboardSurface
+        {...catalogCallbacks}
         snapshot={snapshot}
         onRefresh={async () => {}}
         onPause={async () => {}}
@@ -54,6 +63,7 @@ describe('Dashboard local task interactions', () => {
     } as const
     render(
       <DashboardSurface
+        {...catalogCallbacks}
         snapshot={snapshot}
         onRefresh={async () => {}}
         onPause={async () => {}}

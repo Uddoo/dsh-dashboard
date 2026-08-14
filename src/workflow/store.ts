@@ -4,7 +4,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { parseWorkflow } from './parser.ts'
+import { parseWorkflow, type WorkflowParseOptions } from './parser.ts'
 import type { WorkflowDefinition, WorkflowStatus } from './types.ts'
 
 /** Hot-reload store whose invalid reloads never replace the last good definition. */
@@ -17,7 +17,12 @@ export class WorkflowStore {
   private readonly listeners = new Set<() => void>()
   readonly path: string
 
-  constructor(private readonly ctx: Context, workflowPath: string, cwd = process.cwd()) {
+  constructor(
+    private readonly ctx: Context,
+    workflowPath: string,
+    private readonly parseOptions: WorkflowParseOptions,
+    cwd = process.cwd(),
+  ) {
     this.path = resolve(cwd, workflowPath)
   }
 
@@ -47,7 +52,7 @@ export class WorkflowStore {
     this.lastAttemptAt = new Date().toISOString()
     try {
       const text = await readFile(this.path, 'utf8')
-      const next = parseWorkflow(text, this.path)
+      const next = parseWorkflow(text, this.path, this.parseOptions)
       this.current = next
       this.error = undefined
       this.ctx.logger.info('dsh-dashboard: loaded workflow %s', this.path)

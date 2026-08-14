@@ -100,7 +100,7 @@ const running: readonly IssueRuntimeView[] = [
 ]
 
 export const fixtureSnapshot: DashboardSnapshot = {
-  version: 1,
+  version: 2,
   generatedAt: clock,
   context: { kind: 'linear', providerLabel: 'Linear', projectLabel: 'ENG', projectRef: 'engineering' },
   taskMutations: { canCreate: false, canUpdate: false, canDelete: false, states: [] },
@@ -131,11 +131,28 @@ export const fixtureSnapshot: DashboardSnapshot = {
   configuration: {
     workflowPath: 'F:\\Projects\\example\\WORKFLOW.md',
     workflowLoadedAt: '2026-08-14T02:29:55.000Z',
-    trackerKind: 'linear', projectRef: 'engineering', activeStates: ['Todo', 'In Progress', 'Human Review'],
+    trackerKind: 'linear', projectName: 'dsh-dashboard', projectRef: 'engineering', activeStates: ['Todo', 'In Progress', 'Human Review'],
     terminalStates: ['Done', 'Canceled', 'Duplicate'], workspaceRoot: 'F:\\Workspaces\\dsh-dashboard',
     maxConcurrentAgents: 6, maxTurns: 20, pollingIntervalMs: 5000,
-    permissionPreset: 'workspace-write', agentPreset: 'default', credentialRef: 'linear/default',
+    agentProfile: 'default', permissionPreset: 'workspace-write', agentPreset: 'default', credentialRef: 'linear/default',
     credentialConfigured: true, credentialSource: 'credential-store', credentialWritable: false,
     credentials: [{ ref: 'linear/default', label: 'API key', configured: true, source: 'credential-store', writable: false }],
+  },
+  catalog: {
+    globalBrokerEnabled: false,
+    projects: [
+      {
+        id: '08b8e62d-5a7c-4a3a-a582-b63278347db0', name: 'dsh-dashboard', root: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard',
+        policyPath: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard\\WORKFLOW.md', repositoryIds: ['3731aa25-c8f5-4c50-b056-b662bf0a8717'],
+        workspaceStrategy: 'worktree', autonomousClaims: false, source: 'current-workspace', createdAt: clock, updatedAt: clock, currentWorkspace: true,
+        repositories: [{ id: '3731aa25-c8f5-4c50-b056-b662bf0a8717', kind: 'git', root: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard', remoteUrl: 'https://github.com/Uddoo/dsh-dashboard.git', branch: 'main', createdAt: clock, updatedAt: clock }],
+      },
+      {
+        id: '4bceae56-7cc1-4419-a912-a6ea110448fb', name: 'dsh-dashboard-test', root: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard-test',
+        policyPath: 'F:\\Dev\\Code\\05_Apps_Tools\\deepseek\\dsh-dashboard-test\\WORKFLOW.md', repositoryIds: [], workspaceStrategy: 'controlled-directory', autonomousClaims: false,
+        source: 'manual', createdAt: clock, updatedAt: clock, currentWorkspace: false, repositories: [],
+      },
+    ],
+    discoveryRoots: [{ id: 'cbf5928c-bc76-43e2-944a-d41e96044fd9', path: 'F:\\Dev\\Code\\05_Apps_Tools', maxDepth: 4, confirmationRequired: true, createdAt: clock, updatedAt: clock }],
   },
 }
