@@ -67,6 +67,7 @@ export class HarnessAgentRunner {
       sessionId,
       turnCount: 0,
       startedAt,
+      phaseChangedAt: startedAt,
       updatedAt: startedAt,
       workerHost: this.config.workerHost,
       workspacePath,
@@ -279,7 +280,13 @@ function projectEvent(current: IssueRuntimeView, event: SessionEvent): IssueRunt
     title = 'Turn ended'
     detail = event.data.reason.kind
   }
-  const recent: RuntimeEventView = { type: event.type, title, ...(detail === undefined ? {} : { detail }), at }
+  const recent: RuntimeEventView = {
+    id: `session:${String(current.sessionId)}:${event.seq}`,
+    type: event.type,
+    title,
+    ...(detail === undefined ? {} : { detail }),
+    at,
+  }
   return {
     ...current,
     turnCount,

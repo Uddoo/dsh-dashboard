@@ -19,6 +19,8 @@ export interface TokenTotals {
 }
 
 export interface RuntimeEventView {
+  /** Stable within one Host lifetime; Harness events use `sessionId + seq`. */
+  readonly id: string
   readonly type: string
   readonly title: string
   readonly detail?: string
@@ -35,6 +37,8 @@ export interface IssueRuntimeView {
   readonly sessionId?: string
   readonly turnCount: number
   readonly startedAt?: string
+  /** Timestamp of the current `phase` transition, independent of later session events. */
+  readonly phaseChangedAt: string
   readonly updatedAt: string
   readonly workerHost: string
   readonly workspacePath?: string
@@ -131,10 +135,36 @@ export interface IssueDetailView {
   readonly runtime?: IssueRuntimeView
 }
 
+export type TaskTimelineCategory = 'task' | 'agent' | 'scheduler' | 'system'
+
+export interface TaskTimelineEvent {
+  readonly id: string
+  readonly type: string
+  readonly category: TaskTimelineCategory
+  readonly title: string
+  readonly detail?: string
+  readonly at: string
+}
+
+export interface TaskTimelinePage {
+  readonly events: readonly TaskTimelineEvent[]
+  readonly nextCursor?: string
+  /** Describes the history boundary honestly until Provider history adapters land. */
+  readonly coverage: 'runtime-session' | 'provider-summary'
+  /** True when older runtime events were evicted by the bounded Host retention policy. */
+  readonly truncated: boolean
+}
+
+export interface TaskTimelineOptions {
+  readonly cursor?: string
+  readonly limit?: number
+}
+
 export interface DashboardRpcMap {
   readonly state: { input: Record<string, never>; output: DashboardSnapshot }
   readonly refresh: { input: Record<string, never>; output: DashboardSnapshot }
   readonly issue: { input: { key: string }; output: IssueDetailView }
+  readonly timeline: { input: { key: string; cursor?: string; limit?: number }; output: TaskTimelinePage }
   readonly pause: { input: { paused: boolean }; output: DashboardSnapshot }
   readonly stop: { input: { key: string }; output: DashboardSnapshot }
   readonly createTask: { input: CreateTaskInput; output: DashboardSnapshot }

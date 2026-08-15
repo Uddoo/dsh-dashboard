@@ -32,6 +32,19 @@ export async function handleDashboardRpc(
         const detail = runtime.issueDetail(key)
         return detail === undefined ? badRequest(`unknown issue key ${JSON.stringify(key)}`) : success(detail)
       }
+      case 'timeline': {
+        const key = readStringField(payload, 'key')
+        const cursor = readTimelineCursor(payload)
+        const limit = readOptionalInteger(payload, 'limit', 1, 100)
+        if (key === undefined) return badRequest('timeline requires a non-empty `key`')
+        if (cursor === false) return badRequest('timeline `cursor` is invalid')
+        if (limit === false) return badRequest('timeline `limit` must be an integer from 1 to 100')
+        const page = runtime.issueTimeline(key, {
+          ...(cursor === undefined ? {} : { cursor }),
+          ...(limit === undefined ? {} : { limit }),
+        })
+        return page === undefined ? badRequest(`unknown issue key ${JSON.stringify(key)}`) : success(page)
+      }
       case 'pause': {
         const paused = readBooleanField(payload, 'paused')
         if (paused === undefined) return badRequest('pause requires a boolean `paused`')
@@ -208,6 +221,21 @@ function readOptionalString(value: unknown, key: string): string | undefined | f
   if (object === undefined || !(key in object)) return undefined
   const field = object[key]
   return typeof field === 'string' && field.trim() !== '' ? field.trim() : false
+}
+
+function readTimelineCursor(value: unknown): string | undefined | false {
+  const cursor = readOptionalString(value, 'cursor')
+  if (cursor === undefined || cursor === false) return cursor
+  if (!cursor.startsWith('timeline:')) return false
+  const separator = cursor.indexOf('|', 'timeline:'.length)
+  if (separator < 0) return false
+  try {
+    const at = decodeURIComponent(cursor.slice('timeline:'.length, separator))
+    const id = decodeURIComponent(cursor.slice(separator + 1))
+    return Number.isFinite(Date.parse(at)) && id !== '' ? cursor : false
+  } catch {
+    return false
+  }
 }
 
 function readOptionalNullableString(value: unknown, key: string): string | null | undefined | false {

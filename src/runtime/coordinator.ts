@@ -9,7 +9,7 @@ import type {
   ProjectView,
   RegisterProjectInput,
 } from '../catalog/types.ts'
-import type { IssueDetailView, DashboardSnapshot } from './types.ts'
+import type { DashboardSnapshot, IssueDetailView, TaskTimelineOptions, TaskTimelinePage } from './types.ts'
 import { issueKey } from '../domain/issue.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 import type { DashboardOrchestrator } from '../orchestrator/orchestrator.ts'
@@ -59,7 +59,7 @@ export class DashboardRuntimeCoordinator {
   private globalTimer: NodeJS.Timeout | undefined
   private globalRefreshing: Promise<void> | undefined
   private globalRefreshForceRequested = false
-  private readonly globalIssues = new Map<string, GlobalIssueRoute>()
+  private globalIssues = new Map<string, GlobalIssueRoute>()
   private switchTail: Promise<void> = Promise.resolve()
   private stopped = false
 
@@ -101,7 +101,7 @@ export class DashboardRuntimeCoordinator {
     this.activeProjectId = undefined
     this.globalSelected = false
     this.globalRefreshForceRequested = false
-    this.globalIssues.clear()
+    this.globalIssues = new Map()
   }
 
   async switchProject(projectId: string): Promise<void> {
@@ -204,6 +204,13 @@ export class DashboardRuntimeCoordinator {
     return this.globalSelected ? this.globalIssues.get(key) : this.requireActive().orchestrator.issueDetail(key)
   }
 
+  issueTimeline(key: string, options: TaskTimelineOptions = {}): TaskTimelinePage | undefined {
+    if (!this.globalSelected) return this.requireActive().orchestrator.issueTimeline(key, options)
+    const route = this.globalIssues.get(key)
+    if (route === undefined) return undefined
+    return this.contexts.get(route.projectId)?.runtime?.orchestrator.issueTimeline(route.sourceKey, options)
+  }
+
   async createTask(input: CreateTaskInput, signal?: AbortSignal): Promise<void> {
     await this.requireProjectMode('create a task').orchestrator.createTask(input, signal)
   }
@@ -234,7 +241,7 @@ export class DashboardRuntimeCoordinator {
     const catalog = this.catalog.snapshot()
     const projects = catalog.projects.map(project => this.enrichProject(project))
     const projections: { project: ProjectView; snapshot: DashboardSnapshot }[] = []
-    this.globalIssues.clear()
+    const nextGlobalIssues = new Map<string, GlobalIssueRoute>()
     for (const project of projects) {
       const runtime = this.contexts.get(project.id)?.runtime
       if (runtime === undefined) continue
@@ -247,7 +254,7 @@ export class DashboardRuntimeCoordinator {
           const sourceKey = issueKey(sourceIssue)
           const key = globalRuntimeKey(project.id, sourceKey)
           const sourceRuntime = runtimes.get(sourceKey)
-          this.globalIssues.set(key, {
+          nextGlobalIssues.set(key, {
             projectId: project.id,
             sourceKey,
             issue: { ...sourceIssue, origin },
@@ -258,6 +265,7 @@ export class DashboardRuntimeCoordinator {
         }
       }
     }
+    this.globalIssues = nextGlobalIssues
     return aggregateProjectSnapshots(projections, { ...catalog, projects })
   }
 

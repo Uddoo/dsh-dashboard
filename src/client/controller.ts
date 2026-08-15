@@ -1,7 +1,7 @@
 /** Small external stores for shell visibility and trusted-host RPC state. */
 
 import type { ClientConnectionRpc, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
-import type { DashboardSnapshot } from '../runtime/types.ts'
+import type { DashboardSnapshot, TaskTimelinePage } from '../runtime/types.ts'
 import type { AddDiscoveryRootInput, ProjectScanResult, RegisterProjectInput } from '../catalog/types.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 import {
@@ -24,6 +24,7 @@ export interface DashboardDataPort {
   refresh(): Promise<void>
   setPaused(paused: boolean): Promise<void>
   stopIssue(key: string): Promise<void>
+  loadTimeline(key: string, cursor?: string): Promise<TaskTimelinePage>
   createTask(input: CreateTaskInput): Promise<void>
   updateTask(nativeRef: string, changes: UpdateTaskInput): Promise<void>
   deleteTask(nativeRef: string): Promise<void>
@@ -94,6 +95,23 @@ export class DashboardDataController implements DashboardDataPort {
 
   async stopIssue(key: string): Promise<void> {
     await this.call('stop', { key }, false, true)
+  }
+
+  async loadTimeline(key: string, cursor?: string): Promise<TaskTimelinePage> {
+    this.activeRequests += 1
+    try {
+      const result = await this.rpc.call('/dsh-dashboard', 'timeline', {
+        key,
+        ...(cursor === undefined ? {} : { cursor }),
+        limit: 30,
+      }) as RpcResult<unknown>
+      if (!result.ok) throw dashboardRpcError(result.error.code, result.error.message)
+      return parseTimelinePage(result.value)
+    } catch (error) {
+      throw normalizeDashboardError(error)
+    } finally {
+      this.activeRequests -= 1
+    }
   }
 
   async createTask(input: CreateTaskInput): Promise<void> {
@@ -204,4 +222,30 @@ function parseProjectScan(value: unknown): ProjectScanResult {
     )
   }
   return value as ProjectScanResult
+}
+
+function parseTimelinePage(value: unknown): TaskTimelinePage {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw dashboardProtocolError('response.unsupportedState', 'Dashboard Host returned unsupported task timeline data')
+  }
+  const page = value as { events?: unknown; nextCursor?: unknown; coverage?: unknown; truncated?: unknown }
+  if (!Array.isArray(page.events)
+    || !page.events.every(isTimelineEvent)
+    || (page.nextCursor !== undefined && typeof page.nextCursor !== 'string')
+    || (page.coverage !== 'runtime-session' && page.coverage !== 'provider-summary')
+    || typeof page.truncated !== 'boolean') {
+    throw dashboardProtocolError('response.unsupportedState', 'Dashboard Host returned unsupported task timeline data')
+  }
+  return value as TaskTimelinePage
+}
+
+function isTimelineEvent(value: unknown): boolean {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return typeof event.id === 'string'
+    && typeof event.type === 'string'
+    && ['task', 'agent', 'scheduler', 'system'].includes(String(event.category))
+    && typeof event.title === 'string'
+    && (event.detail === undefined || typeof event.detail === 'string')
+    && typeof event.at === 'string'
 }

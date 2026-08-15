@@ -16,7 +16,16 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TaskIssue, TaskIssueOrigin } from '../domain/issue.ts'
 import { issueKey } from '../domain/issue.ts'
 import type { AddDiscoveryRootInput, DiscoveryRootRecord, ProjectScanResult, ProjectView, RegisterProjectInput } from '../catalog/types.ts'
-import type { BoardColumn, DashboardSnapshot, IssueRuntimeView, TokenTotals } from '../runtime/types.ts'
+import type {
+  BoardColumn,
+  DashboardSnapshot,
+  IssueRuntimeView,
+  TaskTimelineCategory,
+  TaskTimelineEvent,
+  TaskTimelinePage,
+  TokenTotals,
+} from '../runtime/types.ts'
+import { buildTaskTimelinePage } from '../runtime/timeline.ts'
 import type { CreateTaskInput, UpdateTaskInput } from '../task-source/index.ts'
 import type { DashboardDataPort } from './controller.ts'
 import { DashboardUiController } from './controller.ts'
@@ -115,6 +124,7 @@ export function DashboardOverlay({ ui, data, openSession, t }: DashboardOverlayP
           onRefresh={() => data.refresh()}
           onPause={paused => data.setPaused(paused)}
           onStop={key => data.stopIssue(key)}
+          onLoadTimeline={(key, cursor) => data.loadTimeline(key, cursor)}
           onCreateTask={input => data.createTask(input)}
           onUpdateTask={(nativeRef, changes) => data.updateTask(nativeRef, changes)}
           onDeleteTask={nativeRef => data.deleteTask(nativeRef)}
@@ -140,6 +150,7 @@ export interface DashboardSurfaceProps {
   readonly onRefresh: () => Promise<void>
   readonly onPause: (paused: boolean) => Promise<void>
   readonly onStop: (key: string) => Promise<void>
+  readonly onLoadTimeline?: ((key: string, cursor?: string) => Promise<TaskTimelinePage>) | undefined
   readonly onCreateTask: (input: CreateTaskInput) => Promise<void>
   readonly onUpdateTask: (nativeRef: string, changes: UpdateTaskInput) => Promise<void>
   readonly onDeleteTask: (nativeRef: string) => Promise<void>
@@ -175,6 +186,7 @@ export function DashboardSurface({
   onRefresh,
   onPause,
   onStop,
+  onLoadTimeline,
   onCreateTask,
   onUpdateTask,
   onDeleteTask,
@@ -465,6 +477,7 @@ export function DashboardSurface({
       </section>
       {selectedIssue !== undefined ? (
         <IssueInspector
+          key={issueKey(selectedIssue)}
           issue={selectedIssue}
           runtime={selectedRuntime}
           onClose={() => setSelectedKey(undefined)}
@@ -477,6 +490,15 @@ export function DashboardSurface({
           onEdit={() => setTaskEditor({ mode: 'edit', issue: selectedIssue })}
           onDelete={() => setDeleteTarget(selectedIssue)}
           onOpenSession={onOpenSession}
+          onLoadTimeline={async (key, cursor) => {
+            if (onLoadTimeline !== undefined) return await onLoadTimeline(key, cursor)
+            const fallbackIssue = issueMap.get(key)
+            if (fallbackIssue === undefined) throw new Error(`unknown issue key ${JSON.stringify(key)}`)
+            return buildTaskTimelinePage({
+              issue: fallbackIssue,
+              ...(runtimeMap.get(key) === undefined ? {} : { runtime: runtimeMap.get(key)! }),
+            }, { ...(cursor === undefined ? {} : { cursor }), limit: 30 })
+          }}
           enterProjectPending={selectedIssue.origin !== undefined && isPending(`switch:${selectedIssue.origin.projectId}`)}
           onEnterProject={selectedIssue.origin === undefined ? undefined : async () => {
             await runAction(`switch:${selectedIssue.origin!.projectId}`, () => onSwitchProject(selectedIssue.origin!.projectId), t('feedback.projectSwitched'))
@@ -1225,7 +1247,17 @@ function HiddenColumns({ columns }: { readonly columns: readonly BoardColumn[] }
   )
 }
 
-function IssueInspector({ issue, runtime, onClose, onRefresh, refreshPending, onStop, stopPending, canUpdate, canDelete, onEdit, onDelete, onOpenSession, enterProjectPending, onEnterProject }: {
+type InspectorTab = 'overview' | 'timeline'
+type TimelineLoadState = {
+  readonly status: 'idle' | 'loading' | 'ready' | 'error'
+  readonly events: readonly TaskTimelineEvent[]
+  readonly nextCursor?: string
+  readonly coverage?: TaskTimelinePage['coverage']
+  readonly truncated?: boolean
+  readonly error?: unknown
+}
+
+function IssueInspector({ issue, runtime, onClose, onRefresh, refreshPending, onStop, stopPending, canUpdate, canDelete, onEdit, onDelete, onOpenSession, onLoadTimeline, enterProjectPending, onEnterProject }: {
   readonly issue: TaskIssue
   readonly runtime?: IssueRuntimeView | undefined
   readonly onClose: () => void
@@ -1238,26 +1270,81 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, refreshPending, on
   readonly onEdit: () => void
   readonly onDelete: () => void
   readonly onOpenSession: (sessionId: string) => void
+  readonly onLoadTimeline: (key: string, cursor?: string) => Promise<TaskTimelinePage>
   readonly enterProjectPending: boolean
   readonly onEnterProject?: (() => Promise<void>) | undefined
 }) {
   const t = useDashboardTranslation()
-  const [copied, setCopied] = useState(false)
-  const copyLabel = copied ? t('inspector.copied') : t('inspector.copyWorkspace')
-  const copyWorkspace = async (): Promise<void> => {
-    if (runtime?.workspacePath === undefined) return
-    await navigator.clipboard.writeText(runtime.workspacePath)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1200)
+  const [activeTab, setActiveTab] = useState<InspectorTab>('overview')
+  const [timelineCategory, setTimelineCategory] = useState<TaskTimelineCategory | 'all'>('all')
+  const [timeline, setTimeline] = useState<TimelineLoadState>({ status: 'idle', events: [] })
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [copied, setCopied] = useState<'identifier' | 'workspace' | undefined>()
+  const moreId = useId()
+  const primaryAction = onEnterProject !== undefined
+    ? 'project'
+    : runtime?.sessionId !== undefined
+      ? 'session'
+      : canUpdate
+        ? 'edit'
+        : issue.url !== undefined
+          ? 'issue'
+          : undefined
+
+  const copyText = async (kind: 'identifier' | 'workspace', value: string): Promise<void> => {
+    await navigator.clipboard.writeText(value)
+    setCopied(kind)
+    setTimeout(() => setCopied(undefined), 1200)
   }
+  const loadTimeline = async (cursor?: string, append = false): Promise<void> => {
+    setTimeline(current => ({ ...current, status: 'loading', error: undefined }))
+    try {
+      const page = await onLoadTimeline(issueKey(issue), cursor)
+      setTimeline(current => {
+        const events = append ? mergeTimelineEvents(current.events, page.events) : page.events
+        return {
+          status: 'ready',
+          events,
+          coverage: page.coverage,
+          truncated: page.truncated,
+          ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+        }
+      })
+    } catch (loadError) {
+      setTimeline(current => ({ ...current, status: 'error', error: loadError }))
+    }
+  }
+  const openTimeline = (): void => {
+    setActiveTab('timeline')
+    if (timeline.status === 'idle') void loadTimeline()
+  }
+  const refreshInspector = async (): Promise<void> => {
+    await onRefresh()
+    if (activeTab === 'timeline') await loadTimeline()
+  }
+  const filteredTimeline = timeline.events.filter(event => timelineCategory === 'all' || event.category === timelineCategory)
+  const timelineGroups = groupTimelineEvents(filteredTimeline, t('meta.locale'))
+  const attentionMessage = runtime?.phase === 'retrying'
+    ? runtime.retry?.error ?? t('runtime.retrying')
+    : runtime?.phase === 'blocked'
+      ? runtime.blocked?.reason ?? t('runtime.blocked')
+      : undefined
+
   return (
-    <aside className="dshd-inspector" aria-label={t('inspector.detailsAria', { identifier: issue.identifier })}>
+    <aside
+      className="dshd-inspector"
+      aria-label={t('inspector.detailsAria', { identifier: issue.identifier })}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return
+        event.stopPropagation()
+        if (moreOpen) setMoreOpen(false)
+        else onClose()
+      }}
+    >
       <header className="dshd-inspector-header">
         <div><strong>{issue.identifier}</strong><span>{issue.title}</span></div>
         <div>
           {issue.url !== undefined ? <a href={issue.url} target="_blank" rel="noreferrer" aria-label={t('inspector.openIssueAria')}><ExternalIcon size={18} /></a> : null}
-          {canUpdate ? <button type="button" aria-label={t('inspector.editTaskAria')} onClick={onEdit}><EditIcon size={17} /></button> : null}
-          {canDelete ? <button type="button" aria-label={t('inspector.deleteTaskAria')} onClick={onDelete}><TrashIcon size={17} /></button> : null}
           <button type="button" aria-label={t('inspector.closeAria')} onClick={onClose}><CloseIcon size={18} /></button>
         </div>
       </header>
@@ -1266,58 +1353,166 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, refreshPending, on
         <span className="dshd-divider" />
         <span className="dshd-state-inline"><span className="dshd-state-ring" style={{ '--dshd-state': stateColor(issue.state.name, issue.state.type, issue.state.color) } as React.CSSProperties} />{issue.state.name}</span>
       </div>
-      {issue.origin === undefined ? null : (
-        <InspectorSection title={t('inspector.source')}>
-          <InspectorRow label={t('inspector.project')}><span>{issue.origin.projectName}</span></InspectorRow>
-          <InspectorRow label={t('inspector.provider')}><span>{issue.origin.providerLabel} · {issue.origin.contextLabel}</span></InspectorRow>
-          <InspectorRow label={t('inspector.rawState')}><span>{issue.state.name}</span></InspectorRow>
-        </InspectorSection>
-      )}
-      <InspectorSection title={t('inspector.runtime')}>
-        <InspectorRow label={t('inspector.session')}>
-          <span className="dshd-mono dshd-ellipsis">{runtime?.sessionId ?? '—'}</span>
-          {runtime?.sessionId !== undefined ? <button type="button" className="dshd-link" onClick={() => onOpenSession(runtime.sessionId!)}>{t('inspector.openSession')} <ExternalIcon size={13} /></button> : null}
-        </InspectorRow>
-        <InspectorRow label={t('inspector.runtimeTurns')}><span>{elapsed(runtime?.startedAt)} / {runtime?.turnCount ?? 0}</span></InspectorRow>
-        <InspectorRow label={t('inspector.worker')}><span>{runtime?.workerHost === 'local' ? t('common.local') : runtime?.workerHost ?? t('common.local')}</span></InspectorRow>
-      </InspectorSection>
-      <InspectorSection title={t('inspector.workspace')}>
-        <div className="dshd-workspace-line">
-          <code>{runtime?.workspacePath ?? t('inspector.notCreated')}</code>
-          {runtime?.workspacePath !== undefined ? <button type="button" aria-label={copyLabel} title={copyLabel} onClick={() => { void copyWorkspace() }}><CopyIcon size={18} /></button> : null}
-        </div>
-      </InspectorSection>
-      <InspectorSection title={t('inspector.latestUpdate')}>
-        <div className="dshd-latest-update"><span className="dshd-dot dshd-dot-green" /><p>{runtime?.lastMessage ?? t('inspector.waitingUpdate')}</p></div>
-        <span className="dshd-update-caption">{runtime?.lastEvent ?? t('inspector.noEvent')} · {relativeTime(runtime?.lastEventAt, t)}</span>
-      </InspectorSection>
-      <InspectorSection title={t('runtime.tokens')}>
-        <div className="dshd-token-grid">
-          <TokenCell label={t('inspector.total')} value={runtime?.tokens.total ?? 0} />
-          <TokenCell label={t('inspector.input')} value={(runtime?.tokens.input ?? 0) + (runtime?.tokens.cacheRead ?? 0) + (runtime?.tokens.cacheWrite ?? 0)} />
-          <TokenCell label={t('inspector.output')} value={runtime?.tokens.output ?? 0} />
-        </div>
-      </InspectorSection>
-      <InspectorSection title={t('inspector.recentEvents')} grow>
-        <div className="dshd-timeline">
-          {(runtime?.recentEvents ?? []).slice(0, 5).map((event, index) => (
-            <div className="dshd-timeline-row" key={`${event.type}-${event.at}-${index}`}>
-              <span className={`dshd-timeline-node ${index < 2 ? 'dshd-timeline-node-fill' : ''}`} />
-              <div><strong>{event.title}</strong>{event.detail !== undefined ? <span>{event.detail}</span> : null}</div>
-              <time>{relativeTime(event.at, t)}</time>
+      <div className="dshd-inspector-tabs" role="tablist" aria-label={t('inspector.viewsAria')}>
+        <button type="button" role="tab" aria-selected={activeTab === 'overview'} onClick={() => setActiveTab('overview')}>{t('inspector.overview')}</button>
+        <button type="button" role="tab" aria-selected={activeTab === 'timeline'} onClick={openTimeline}>{t('inspector.timeline')}</button>
+      </div>
+      <div className="dshd-inspector-body">
+        {activeTab === 'overview' ? (
+          <>
+            {attentionMessage === undefined ? null : (
+              <div className="dshd-inspector-attention" data-tone={runtime?.phase}>
+                <strong>{runtime?.phase === 'retrying' ? t('inspector.retryingTitle') : t('inspector.blockedTitle')}</strong>
+                <span>{attentionMessage}</span>
+              </div>
+            )}
+            {issue.description === undefined ? null : (
+              <InspectorSection title={t('inspector.description')}><p className="dshd-inspector-description">{issue.description}</p></InspectorSection>
+            )}
+            <InspectorSection title={t('inspector.source')}>
+              <InspectorRow label={t('inspector.project')}><span>{issue.origin?.projectName ?? issue.scopeRef}</span></InspectorRow>
+              <InspectorRow label={t('inspector.provider')}><span>{issue.origin?.providerLabel ?? providerLabel(issue.sourceKind, issue.sourceKind, t)}{issue.origin === undefined ? null : ` · ${issue.origin.contextLabel}`}</span></InspectorRow>
+              <InspectorRow label={t('inspector.rawState')}><span>{issue.state.name}</span></InspectorRow>
+            </InspectorSection>
+            {runtime === undefined ? (
+              <div className="dshd-inspector-runtime-empty">
+                <MonitorIcon size={20} />
+                <div><strong>{t('inspector.noRuntimeTitle')}</strong><span>{t('inspector.noRuntimeDescription')}</span></div>
+              </div>
+            ) : (
+              <>
+                <InspectorSection title={t('inspector.runtime')}>
+                  <InspectorRow label={t('inspector.session')}>
+                    <span className="dshd-mono dshd-ellipsis">{runtime.sessionId ?? '—'}</span>
+                    {runtime.sessionId !== undefined ? <button type="button" className="dshd-link" onClick={() => onOpenSession(runtime.sessionId!)}>{t('inspector.openSession')} <ExternalIcon size={13} /></button> : null}
+                  </InspectorRow>
+                  <InspectorRow label={t('inspector.runtimeTurns')}><span>{elapsed(runtime.startedAt)} / {runtime.turnCount}</span></InspectorRow>
+                  <InspectorRow label={t('inspector.worker')}><span>{runtime.workerHost === 'local' ? t('common.local') : runtime.workerHost}</span></InspectorRow>
+                </InspectorSection>
+                <InspectorSection title={t('inspector.workspace')}>
+                  <div className="dshd-workspace-line"><code>{runtime.workspacePath ?? t('inspector.notCreated')}</code></div>
+                </InspectorSection>
+                <InspectorSection title={t('inspector.latestUpdate')}>
+                  <div className="dshd-latest-update"><span className="dshd-dot dshd-dot-green" /><p>{runtime.lastMessage ?? t('inspector.waitingUpdate')}</p></div>
+                  <span className="dshd-update-caption">{runtime.lastEvent ?? t('inspector.noEvent')} · {relativeTime(runtime.lastEventAt, t)}</span>
+                </InspectorSection>
+                <InspectorSection title={t('runtime.tokens')}>
+                  <div className="dshd-token-grid">
+                    <TokenCell label={t('inspector.total')} value={runtime.tokens.total} />
+                    <TokenCell label={t('inspector.input')} value={runtime.tokens.input + runtime.tokens.cacheRead + runtime.tokens.cacheWrite} />
+                    <TokenCell label={t('inspector.output')} value={runtime.tokens.output} />
+                  </div>
+                </InspectorSection>
+              </>
+            )}
+          </>
+        ) : (
+          <section className="dshd-inspector-timeline-view" aria-label={t('inspector.timeline')}>
+            <header>
+              <div>
+                <strong>{t('inspector.timeline')}</strong>
+                {timeline.coverage === undefined ? null : <span data-coverage={timeline.coverage}>{t(timeline.truncated === true ? 'inspector.coverageRuntimeTruncated' : timeline.coverage === 'runtime-session' ? 'inspector.coverageRuntime' : 'inspector.coverageProvider')}</span>}
+              </div>
+              {timeline.coverage === undefined ? null : <small>{t(timeline.truncated === true ? 'inspector.coverageRuntimeTruncatedHelp' : timeline.coverage === 'runtime-session' ? 'inspector.coverageRuntimeHelp' : 'inspector.coverageProviderHelp')}</small>}
+            </header>
+            <div className="dshd-timeline-filters" role="group" aria-label={t('inspector.timelineFiltersAria')}>
+              {(['all', 'task', 'agent', 'scheduler', 'system'] as const).map(category => (
+                <button key={category} type="button" aria-pressed={timelineCategory === category} onClick={() => setTimelineCategory(category)}>{timelineCategoryLabel(category, t)}</button>
+              ))}
             </div>
-          ))}
-          {(runtime?.recentEvents.length ?? 0) === 0 ? <span className="dshd-muted">{t('inspector.noAgentEvents')}</span> : null}
-        </div>
-      </InspectorSection>
+            {timeline.status === 'loading' && timeline.events.length === 0 ? <div className="dshd-timeline-state">{t('inspector.timelineLoading')}</div> : null}
+            {timeline.status === 'error' && timeline.events.length === 0 ? (
+              <div className="dshd-timeline-state" data-tone="error"><span>{dashboardErrorMessage(timeline.error, t)}</span><button type="button" onClick={() => { void loadTimeline() }}>{t('inspector.timelineRetry')}</button></div>
+            ) : null}
+            {timeline.status === 'error' && timeline.events.length > 0 ? (
+              <div className="dshd-timeline-inline-error"><span>{dashboardErrorMessage(timeline.error, t)}</span><button type="button" onClick={() => { void loadTimeline() }}>{t('inspector.timelineRetry')}</button></div>
+            ) : null}
+            {timeline.status !== 'idle' && filteredTimeline.length === 0 && timeline.status !== 'loading' && timeline.status !== 'error'
+              ? <div className="dshd-timeline-state">{t(timeline.events.length === 0 ? 'inspector.timelineEmpty' : 'inspector.timelineFilterEmpty')}</div>
+              : null}
+            <div className="dshd-full-timeline">
+              {timelineGroups.map(group => (
+                <section key={group.label} className="dshd-timeline-group">
+                  <h3>{group.label}</h3>
+                  {group.events.map(event => (
+                    <article key={event.id} className="dshd-full-timeline-row" data-category={event.category}>
+                      <span className="dshd-timeline-node" />
+                      <div><strong>{timelineEventTitle(event, t)}</strong>{event.detail === undefined ? null : <p>{event.detail}</p>}</div>
+                      <time dateTime={event.at} title={absoluteTime(event.at, t)}>{relativeTime(event.at, t)}</time>
+                    </article>
+                  ))}
+                </section>
+              ))}
+            </div>
+            {timeline.nextCursor === undefined ? null : (
+              <button type="button" className="dshd-timeline-more" disabled={timeline.status === 'loading'} onClick={() => { void loadTimeline(timeline.nextCursor, true) }}>{timeline.status === 'loading' ? t('inspector.timelineLoadingMore') : t('inspector.timelineLoadMore')}</button>
+            )}
+          </section>
+        )}
+      </div>
       <footer className="dshd-inspector-actions">
-        {onEnterProject === undefined
-          ? <button type="button" className="dshd-danger" disabled={runtime?.phase !== 'running' || stopPending} aria-busy={stopPending} onClick={() => { void onStop(issueKey(issue)).catch(() => undefined) }}><StopIcon size={14} />{t('inspector.stopAgent')}</button>
-          : <button type="button" className="dshd-primary" disabled={enterProjectPending} aria-busy={enterProjectPending} onClick={() => { void onEnterProject().catch(() => undefined) }}><ExternalIcon size={14} />{t('inspector.enterProject')}</button>}
-        <button type="button" disabled={refreshPending} aria-busy={refreshPending} onClick={() => { void onRefresh().catch(() => undefined) }}><RefreshIcon size={16} className={refreshPending ? 'dshd-spinning' : undefined} />{t('inspector.refreshIssue')}</button>
+        {primaryAction === 'project' ? <button type="button" className="dshd-primary" disabled={enterProjectPending} aria-busy={enterProjectPending} onClick={() => { void onEnterProject!().catch(() => undefined) }}><ExternalIcon size={14} />{t('inspector.enterProject')}</button> : null}
+        {primaryAction === 'session' ? <button type="button" className="dshd-primary" onClick={() => onOpenSession(runtime!.sessionId!)}><MonitorIcon size={15} />{t('inspector.openSession')}</button> : null}
+        {primaryAction === 'edit' ? <button type="button" className="dshd-primary" onClick={onEdit}><EditIcon size={15} />{t('inspector.editTask')}</button> : null}
+        {primaryAction === 'issue' ? <a className="dshd-primary" href={issue.url} target="_blank" rel="noreferrer"><ExternalIcon size={14} />{t('inspector.openIssue')}</a> : null}
+        <button type="button" disabled={refreshPending} aria-busy={refreshPending} onClick={() => { void refreshInspector().catch(() => undefined) }}><RefreshIcon size={16} className={refreshPending ? 'dshd-spinning' : undefined} />{t('inspector.refreshIssue')}</button>
+        <div className="dshd-inspector-more-wrap">
+          <button type="button" className="dshd-inspector-more-trigger" aria-expanded={moreOpen} aria-controls={moreId} onClick={() => setMoreOpen(value => !value)}>{t('inspector.moreActions')}<ChevronIcon size={14} /></button>
+          {moreOpen ? (
+            <div id={moreId} className="dshd-inspector-menu" role="menu">
+              {canUpdate && primaryAction !== 'edit' ? <button type="button" role="menuitem" onClick={() => { setMoreOpen(false); onEdit() }}><EditIcon size={15} />{t('inspector.editTask')}</button> : null}
+              <button type="button" role="menuitem" onClick={() => { void copyText('identifier', issue.identifier) }}><CopyIcon size={15} />{copied === 'identifier' ? t('inspector.copied') : t('inspector.copyIdentifier')}</button>
+              {runtime?.workspacePath === undefined ? null : <button type="button" role="menuitem" onClick={() => { void copyText('workspace', runtime.workspacePath!) }}><CopyIcon size={15} />{copied === 'workspace' ? t('inspector.copied') : t('inspector.copyWorkspace')}</button>}
+              {runtime?.phase === 'running' ? <button type="button" role="menuitem" className="dshd-menu-danger" disabled={stopPending} aria-busy={stopPending} onClick={() => { setMoreOpen(false); void onStop(issueKey(issue)).catch(() => undefined) }}><StopIcon size={14} />{t('inspector.stopAgent')}</button> : null}
+              {canDelete ? <button type="button" role="menuitem" className="dshd-menu-danger" onClick={() => { setMoreOpen(false); onDelete() }}><TrashIcon size={15} />{t('inspector.deleteTask')}</button> : null}
+            </div>
+          ) : null}
+        </div>
       </footer>
     </aside>
   )
+}
+
+function mergeTimelineEvents(current: readonly TaskTimelineEvent[], next: readonly TaskTimelineEvent[]): readonly TaskTimelineEvent[] {
+  const ids = new Set(current.map(event => event.id))
+  return [...current, ...next.filter(event => !ids.has(event.id))]
+}
+
+function groupTimelineEvents(events: readonly TaskTimelineEvent[], locale: string): readonly { readonly label: string; readonly events: readonly TaskTimelineEvent[] }[] {
+  const groups = new Map<string, TaskTimelineEvent[]>()
+  const formatter = new Intl.DateTimeFormat(locale, { dateStyle: 'medium' })
+  for (const event of events) {
+    const date = new Date(event.at)
+    const label = Number.isFinite(date.getTime()) ? formatter.format(date) : '—'
+    const group = groups.get(label) ?? []
+    group.push(event)
+    groups.set(label, group)
+  }
+  return [...groups].map(([label, groupEvents]) => ({ label, events: groupEvents }))
+}
+
+function timelineCategoryLabel(category: TaskTimelineCategory | 'all', t: ReturnType<typeof useDashboardTranslation>): string {
+  if (category === 'all') return t('inspector.timelineAll')
+  if (category === 'task') return t('inspector.timelineTask')
+  if (category === 'agent') return t('inspector.timelineAgent')
+  if (category === 'scheduler') return t('inspector.timelineScheduler')
+  return t('inspector.timelineSystem')
+}
+
+function timelineEventTitle(event: TaskTimelineEvent, t: ReturnType<typeof useDashboardTranslation>): string {
+  if (event.type === 'task.created') return t('inspector.eventTaskCreated')
+  if (event.type === 'task.updated') return t('inspector.eventTaskUpdated')
+  if (event.type === 'agent.started') return t('inspector.eventAgentStarted')
+  if (event.type === 'scheduler.running') return t('inspector.eventAgentRunning')
+  if (event.type === 'scheduler.retrying') return t('inspector.eventAgentRetrying')
+  if (event.type === 'scheduler.blocked') return t('inspector.eventAgentBlocked')
+  if (event.type === 'scheduler.idle') return t('inspector.eventAgentIdle')
+  if (event.type === 'turn/start') return t('inspector.eventTurnStarted')
+  if (event.type === 'turn/end') return t('inspector.eventTurnEnded')
+  if (event.type === 'assistant/message') return t('inspector.eventAssistantMessage')
+  if (event.type === 'tool/call') return t('inspector.eventToolStarted')
+  if (event.type === 'tool/result') return t('inspector.eventToolCompleted')
+  return event.title
 }
 
 function TaskEditor({ editor, states, onClose, onCreate, onUpdate }: {

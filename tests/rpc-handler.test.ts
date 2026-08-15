@@ -5,6 +5,30 @@ import { DashboardDomainError, decodeDashboardError } from '../src/runtime/error
 import type { DashboardRuntimeCoordinator } from '../src/runtime/coordinator.ts'
 
 describe('Dashboard RPC project switching', () => {
+  it('loads a validated timeline page without refreshing the Dashboard snapshot', async () => {
+    const page = { events: [], coverage: 'provider-summary', truncated: false } as const
+    const issueTimeline = vi.fn(() => page)
+    const runtime = { issueTimeline } as unknown as DashboardRuntimeCoordinator
+
+    const result = await handleDashboardRpc(
+      runtime,
+      'timeline',
+      { key: 'local:demo:1', cursor: 'timeline:2026-08-14T10%3A00%3A00.000Z|event-1', limit: 30 },
+      new AbortController().signal,
+    )
+
+    expect(issueTimeline).toHaveBeenCalledWith('local:demo:1', { cursor: 'timeline:2026-08-14T10%3A00%3A00.000Z|event-1', limit: 30 })
+    expect(result).toEqual({ ok: true, value: page })
+  })
+
+  it('rejects invalid timeline pagination before dispatch', async () => {
+    const issueTimeline = vi.fn()
+    const runtime = { issueTimeline } as unknown as DashboardRuntimeCoordinator
+    const result = await handleDashboardRpc(runtime, 'timeline', { key: 'local:demo:1', limit: 0 }, new AbortController().signal)
+    expect(result).toMatchObject({ ok: false, error: { code: 'bad-request' } })
+    expect(issueTimeline).not.toHaveBeenCalled()
+  })
+
   it('switches to the global composite selection', async () => {
     const switchGlobal = vi.fn(async () => undefined)
     const runtime = {

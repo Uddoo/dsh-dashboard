@@ -11,9 +11,13 @@ import type {
   DashboardSnapshot,
   IssueDetailView,
   IssueRuntimeView,
+  RuntimeEventView,
+  TaskTimelineOptions,
+  TaskTimelinePage,
   TokenTotals,
 } from '../runtime/types.ts'
 import { addTokens, emptyTokens } from '../runtime/types.ts'
+import { buildTaskTimelinePage, RuntimeTimelineArchive } from '../runtime/timeline.ts'
 import type { CreateTaskInput, TaskSourceResolver, UpdateTaskInput } from '../task-source/index.ts'
 import type { WorkflowStore } from '../workflow/store.ts'
 import type { WorkflowDefinition } from '../workflow/types.ts'
@@ -49,6 +53,9 @@ export class DashboardOrchestrator {
   private readonly running = new Map<string, RunningRecord>()
   private readonly retries = new Map<string, RetryRecord>()
   private readonly runtimeArchive = new Map<string, IssueRuntimeView>()
+  /** Bounded in-process event logs; intentionally kept out of the polling snapshot. */
+  private readonly timelineArchive = new Map<string, RuntimeTimelineArchive>()
+  private timelineEventSequence = 0
   private board: readonly TaskIssue[] = []
   private paused = false
   private lastRefreshAt: string | undefined
@@ -272,6 +279,18 @@ export class DashboardOrchestrator {
     return { issue, ...(runtime === undefined ? {} : { runtime }) }
   }
 
+  issueTimeline(key: string, options: TaskTimelineOptions = {}): TaskTimelinePage | undefined {
+    const detail = this.issueDetail(key)
+    if (detail === undefined) return undefined
+    const archive = this.timelineArchive.get(key)?.snapshot()
+    return buildTaskTimelinePage(
+      detail,
+      options,
+      archive?.events ?? detail.runtime?.recentEvents ?? [],
+      archive?.truncated ?? false,
+    )
+  }
+
   private async poll(dispatchEnabled: boolean): Promise<void> {
     if (this.stopped || (dispatchEnabled && !this.active)) return
     try {
@@ -338,22 +357,32 @@ export class DashboardOrchestrator {
       const key = issueKey(issue)
       if (this.running.has(key) || this.retries.has(key)) continue
       if (active.has(normalizedState(issue.state.name)) && !issue.dispatchable) {
-        const now = new Date().toISOString()
-        this.runtimeArchive.set(key, {
+        const previous = this.runtimeArchive.get(key)
+        const reason = blockerReason(issue)
+        const unchanged = previous?.phase === 'blocked' && previous.blocked?.reason === reason
+        const now = unchanged ? previous.updatedAt : new Date().toISOString()
+        const view: IssueRuntimeView = {
           key,
           identifier: issue.identifier,
           phase: 'blocked',
           state: issue.state.name,
           turnCount: 0,
+          phaseChangedAt: now,
           updatedAt: now,
           workerHost: this.config.workerHost,
-          tokens: this.runtimeArchive.get(key)?.tokens ?? emptyTokens(),
-          blocked: { reason: blockerReason(issue) },
-          recentEvents: this.runtimeArchive.get(key)?.recentEvents ?? [],
-        })
+          tokens: previous?.tokens ?? emptyTokens(),
+          blocked: { reason },
+          recentEvents: previous?.recentEvents ?? [],
+        }
+        this.runtimeArchive.set(key, view)
+        if (!unchanged) this.captureTimelineEvent(key, this.schedulerTimelineEvent('scheduler.blocked', 'Agent blocked', now, reason))
       } else if (this.runtimeArchive.get(key)?.phase === 'blocked') {
         this.runtimeArchive.delete(key)
       }
+    }
+
+    for (const key of this.timelineArchive.keys()) {
+      if (!byKey.has(key) && !this.running.has(key) && !this.retries.has(key)) this.timelineArchive.delete(key)
     }
   }
 
@@ -402,6 +431,7 @@ export class DashboardOrchestrator {
       state: issue.state.name,
       turnCount: previous?.turnCount ?? 0,
       startedAt: now,
+      phaseChangedAt: now,
       updatedAt: now,
       workerHost: this.config.workerHost,
       tokens: previous?.tokens ?? emptyTokens(),
@@ -410,6 +440,7 @@ export class DashboardOrchestrator {
     const record: RunningRecord = { issue, workflow: definition, abort, attempt, runtime }
     this.running.set(key, record)
     this.runtimeArchive.set(key, runtime)
+    this.captureTimelineEvent(key, this.schedulerTimelineEvent('scheduler.running', 'Agent running', now))
     void this.execute(record).finally(() => {
       this.running.delete(key)
       this.schedule(0)
@@ -443,6 +474,7 @@ export class DashboardOrchestrator {
         signal: abort.signal,
         onRuntime: (view) => {
           const merged = mergeRuntime(view)
+          this.captureTimelineEvent(key, merged.recentEvents[0])
           record.runtime = merged
           this.runtimeArchive.set(key, merged)
         },
@@ -486,17 +518,41 @@ export class DashboardOrchestrator {
     }
   }
 
+  private captureTimelineEvent(key: string, event: RuntimeEventView | undefined): void {
+    if (event === undefined) return
+    let archive = this.timelineArchive.get(key)
+    if (archive === undefined) {
+      archive = new RuntimeTimelineArchive()
+      this.timelineArchive.set(key, archive)
+    }
+    archive.append(event)
+  }
+
+  private schedulerTimelineEvent(type: string, title: string, at: string, detail?: string): RuntimeEventView {
+    this.timelineEventSequence += 1
+    return {
+      id: `host:${this.timelineEventSequence.toString(36)}`,
+      type,
+      title,
+      ...(detail === undefined ? {} : { detail }),
+      at,
+    }
+  }
+
   private scheduleRetry(record: RunningRecord, attempt: number, delayMs: number, error: string): void {
     const dueAt = Date.now() + delayMs
+    const changedAt = new Date().toISOString()
     const view: IssueRuntimeView = {
       ...record.runtime,
       phase: 'retrying',
-      updatedAt: new Date().toISOString(),
+      phaseChangedAt: changedAt,
+      updatedAt: changedAt,
       retry: { attempt, dueAt: new Date(dueAt).toISOString(), error },
     }
     const key = issueKey(record.issue)
     this.retries.set(key, { issue: record.issue, attempt, dueAt, error, runtime: view })
     this.runtimeArchive.set(key, view)
+    this.captureTimelineEvent(key, this.schedulerTimelineEvent('scheduler.retrying', 'Agent retrying', view.updatedAt, error))
     this.ctx.logger.warn('dsh-dashboard: retrying %s in %dms (attempt %d): %s', record.issue.identifier, delayMs, attempt, error)
   }
 

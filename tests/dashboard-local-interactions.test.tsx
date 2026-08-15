@@ -77,7 +77,7 @@ describe('Dashboard local task interactions', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Harden workspace cleanup boundaries/u }))
-    fireEvent.click(screen.getByRole('button', { name: '编辑本地任务' }))
+    fireEvent.click(screen.getByRole('button', { name: '编辑任务' }))
     const save = screen.getByRole('button', { name: '保存更改' })
     expect((save as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(screen.getByLabelText('标题'), { target: { value: 'Harden scoped workspace cleanup' } })

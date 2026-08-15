@@ -8,8 +8,11 @@ import { ProjectCatalog } from '../src/catalog/catalog.ts'
 import { dashboardCatalogDomainSpec } from '../src/catalog/spec.ts'
 import type { ProjectRecord } from '../src/catalog/types.ts'
 import { fixtureSnapshot } from '../src/client/fixture.ts'
+import { issueKey } from '../src/domain/issue.ts'
 import type { DashboardOrchestrator } from '../src/orchestrator/orchestrator.ts'
 import { DashboardRuntimeCoordinator } from '../src/runtime/coordinator.ts'
+import { globalRuntimeKey } from '../src/runtime/global.ts'
+import type { DashboardSnapshot, TaskTimelineOptions, TaskTimelinePage } from '../src/runtime/types.ts'
 
 const temporaryDirectories: string[] = []
 
@@ -125,6 +128,30 @@ describe('DashboardRuntimeCoordinator', () => {
     expect(globalSnapshot.catalog.projects.every(project => !project.currentWorkspace)).toBe(true)
     expect(globalSnapshot.taskMutations).toEqual({ canCreate: false, canUpdate: false, canDelete: false, states: [] })
 
+    const routedProject = catalog.snapshot().projects.find(project => runtimes.has(project.id))!
+    const routedRuntime = runtimes.get(routedProject.id)!
+    const sourceIssue = fixtureSnapshot.board.columns.flatMap(column => column.issues)[0]!
+    const sourceKey = issueKey(sourceIssue)
+    const routedKey = globalRuntimeKey(routedProject.id, sourceKey)
+    const timelinePage: TaskTimelinePage = { events: [], coverage: 'provider-summary', truncated: false }
+    routedRuntime.issueTimeline.mockReturnValue(timelinePage)
+    expect(coordinator.issueTimeline(routedKey)).toBe(timelinePage)
+
+    let announceSnapshot!: () => void
+    let releaseSnapshot!: () => void
+    const snapshotStarted = new Promise<void>(resolve => { announceSnapshot = resolve })
+    const snapshotRelease = new Promise<void>(resolve => { releaseSnapshot = resolve })
+    routedRuntime.snapshot.mockImplementationOnce(async () => {
+      announceSnapshot()
+      await snapshotRelease
+      return routedRuntime.snapshotValue()
+    })
+    const rebuildingSnapshot = coordinator.snapshot()
+    await snapshotStarted
+    expect(coordinator.issueTimeline(routedKey)).toBe(timelinePage)
+    releaseSnapshot()
+    await rebuildingSnapshot
+
     for (const runtime of runtimes.values()) runtime.refreshOverview.mockClear()
     const coordinatorAccess = coordinator as unknown as { refreshGlobal(force: boolean): Promise<void> }
     await coordinatorAccess.refreshGlobal(false)
@@ -156,6 +183,9 @@ interface FakeRuntime {
   readonly refresh: ReturnType<typeof vi.fn<() => Promise<void>>>
   readonly refreshOverview: ReturnType<typeof vi.fn<() => Promise<void>>>
   readonly pollingIntervalMs: ReturnType<typeof vi.fn<() => number>>
+  readonly snapshot: ReturnType<typeof vi.fn<() => Promise<DashboardSnapshot>>>
+  readonly snapshotValue: () => DashboardSnapshot
+  readonly issueTimeline: ReturnType<typeof vi.fn<(key: string, options?: TaskTimelineOptions) => TaskTimelinePage | undefined>>
   readonly dispose: ReturnType<typeof vi.fn<() => Promise<void>>>
   readonly disposeSources: ReturnType<typeof vi.fn<() => void>>
 }
@@ -168,6 +198,13 @@ function fakeRuntime(project: ProjectRecord, catalog: ProjectCatalog, running: n
   const refreshOverview = vi.fn<() => Promise<void>>(async () => undefined)
   const pollingIntervalMs = vi.fn<() => number>(() => 60_000)
   const disposeSources = vi.fn<() => void>(() => undefined)
+  const snapshotValue = (): DashboardSnapshot => ({
+    ...fixtureSnapshot,
+    context: { kind: 'local', providerLabel: 'Local', projectLabel: project.name, projectRef: project.id },
+    catalog: catalog.snapshot(),
+  })
+  const snapshot = vi.fn<() => Promise<DashboardSnapshot>>(async () => snapshotValue())
+  const issueTimeline = vi.fn<(key: string, options?: TaskTimelineOptions) => TaskTimelinePage | undefined>(() => undefined)
   const orchestrator = {
     start,
     setActive,
@@ -175,19 +212,16 @@ function fakeRuntime(project: ProjectRecord, catalog: ProjectCatalog, running: n
     refreshOverview,
     pollingIntervalMs,
     runtimeActivity: () => ({ running, retrying: 0 }),
-    snapshot: vi.fn(async () => ({
-      ...fixtureSnapshot,
-      context: { kind: 'local', providerLabel: 'Local', projectLabel: project.name, projectRef: project.id },
-      catalog: catalog.snapshot(),
-    })),
+    snapshot,
     setPaused: vi.fn(),
     stopIssue: vi.fn(() => false),
     issueDetail: vi.fn(() => undefined),
+    issueTimeline,
     createTask: vi.fn(async () => undefined),
     updateTask: vi.fn(async () => undefined),
     deleteTask: vi.fn(async () => false),
   } as unknown as DashboardOrchestrator
-  return { orchestrator, start, setActive, refresh, refreshOverview, pollingIntervalMs, dispose, disposeSources }
+  return { orchestrator, start, setActive, refresh, refreshOverview, pollingIntervalMs, snapshot, snapshotValue, issueTimeline, dispose, disposeSources }
 }
 
 function localWorkflow(project: string, contextLabel: string): string {

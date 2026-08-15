@@ -307,7 +307,7 @@ function task(state: string): TaskIssue {
 function runtime(issue: TaskIssue, phase: IssueRuntimeView['phase']): IssueRuntimeView {
   return {
     key: issueKey(issue), identifier: issue.identifier, phase, state: issue.state.name,
-    turnCount: 0, updatedAt: new Date(0).toISOString(), workerHost: 'test', tokens: emptyTokens(), recentEvents: [],
+    turnCount: 0, phaseChangedAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), workerHost: 'test', tokens: emptyTokens(), recentEvents: [],
   }
 }
 
