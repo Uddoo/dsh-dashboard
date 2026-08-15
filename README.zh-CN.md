@@ -71,7 +71,7 @@ Host 插件负责 Provider 访问、调度、workspace、Hook、Agent session、
 ### 从 npm 安装
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.5.0
+dsh plugin --profile web add dsh-dashboard@0.6.0
 dsh web --dump-config
 dsh web
 ```
@@ -79,7 +79,7 @@ dsh web
 如果没有全局安装 CLI：
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.5.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.6.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -95,7 +95,7 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-dsh plugin --profile web add ./dsh-dashboard-0.5.0.tgz
+dsh plugin --profile web add ./dsh-dashboard-0.6.0.tgz
 dsh web
 ```
 

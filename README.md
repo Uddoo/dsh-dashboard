@@ -71,7 +71,7 @@ This repository compiles and tests against the published Harness `0.1.0-rc.6` pa
 ### npm
 
 ```powershell
-dsh plugin --profile web add dsh-dashboard@0.5.0
+dsh plugin --profile web add dsh-dashboard@0.6.0
 dsh web --dump-config
 dsh web
 ```
@@ -79,7 +79,7 @@ dsh web
 Without a global CLI:
 
 ```powershell
-npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.5.0
+npx --yes @deepseek-ai/dsh@0.1.0-rc.6 plugin --profile web add dsh-dashboard@0.6.0
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web --dump-config
 npx --yes @deepseek-ai/dsh@0.1.0-rc.6 web
 ```
@@ -95,7 +95,7 @@ pnpm test
 pnpm run build
 Copy-Item -LiteralPath WORKFLOW.example.md -Destination WORKFLOW.md
 pnpm pack
-dsh plugin --profile web add ./dsh-dashboard-0.5.0.tgz
+dsh plugin --profile web add ./dsh-dashboard-0.6.0.tgz
 dsh web
 ```
 
