@@ -22,6 +22,15 @@ import type { DashboardDataPort } from './controller.ts'
 import { DashboardUiController } from './controller.ts'
 import { dashboardErrorMessage } from './errors.ts'
 import { DashboardI18nProvider, useDashboardTranslation } from './i18n.tsx'
+import { buildAttentionSummary } from './attention.ts'
+import type { AttentionAlert, AttentionSummary } from './attention.ts'
+import {
+  defaultBoardViewPreferences,
+  isDefaultBoardViewPreferences,
+  loadBoardViewPreferences,
+  saveBoardViewPreferences,
+} from './view-preferences.ts'
+import type { BoardViewPreferences } from './view-preferences.ts'
 import {
   BoardIcon,
   CheckIcon,
@@ -35,7 +44,6 @@ import {
   FolderIcon,
   GitBranchIcon,
   MonitorIcon,
-  MoreIcon,
   PauseIcon,
   PlayIcon,
   PlusIcon,
@@ -147,6 +155,8 @@ export interface DashboardSurfaceProps {
 
 type Tab = 'board' | 'runtime' | 'projects' | 'configuration'
 type RuntimePhaseFilter = Extract<IssueRuntimeView['phase'], 'running' | 'retrying' | 'blocked'>
+type RuntimeFilter = RuntimePhaseFilter | 'attention'
+type ActionToastState = { readonly tone: 'success' | 'error'; readonly message: string }
 type TaskEditorState =
   | { readonly mode: 'create'; readonly state: string }
   | { readonly mode: 'edit'; readonly issue: TaskIssue }
@@ -181,14 +191,17 @@ export function DashboardSurface({
   const [tab, setTab] = useState<Tab>('board')
   const [selectedKey, setSelectedKey] = useState<string | undefined>(initialSelectedKey)
   const [filterOpen, setFilterOpen] = useState(false)
+  const [displayOpen, setDisplayOpen] = useState(false)
   const [filter, setFilter] = useState('')
-  const [runtimePhaseFilter, setRuntimePhaseFilter] = useState<RuntimePhaseFilter | undefined>()
+  const [runtimeFilter, setRuntimeFilter] = useState<RuntimeFilter | undefined>()
   const [sourceFilter, setSourceFilter] = useState('all')
-  const [showHidden, setShowHidden] = useState(true)
   const [taskEditor, setTaskEditor] = useState<TaskEditorState | undefined>()
   const [deleteTarget, setDeleteTarget] = useState<TaskIssue | undefined>()
   const [catalogDialog, setCatalogDialog] = useState<CatalogDialogState | undefined>()
   const [catalogBusy, setCatalogBusy] = useState(false)
+  const [pendingActions, setPendingActions] = useState<ReadonlySet<string>>(() => new Set())
+  const [toast, setToast] = useState<ActionToastState | undefined>()
+  const [storedViewPreferences, setStoredViewPreferences] = useState(loadBoardViewPreferences)
   const deferredFilter = useDeferredValue(filter.trim().toLocaleLowerCase('en-US'))
   const issueMap = useMemo(() => {
     const map = new Map<string, TaskIssue>()
@@ -198,37 +211,86 @@ export function DashboardSurface({
     return map
   }, [snapshot])
   const runtimeMap = useMemo(() => new Map((snapshot?.runtime.issues ?? []).map(item => [item.key, item])), [snapshot])
+  const attention = useMemo(() => buildAttentionSummary(snapshot), [snapshot])
   const selectedIssue = selectedKey === undefined ? undefined : issueMap.get(selectedKey)
   const selectedRuntime = selectedKey === undefined ? undefined : runtimeMap.get(selectedKey)
+  const global = snapshot?.selection.mode === 'global'
+  const viewScope = global
+    ? 'global'
+    : `project:${snapshot?.selection.mode === 'project' ? snapshot.selection.projectId ?? snapshot.context?.projectRef ?? 'unknown' : 'unknown'}`
+  const viewPreferences = storedViewPreferences[viewScope] ?? defaultBoardViewPreferences
   const columns = useMemo(() => (snapshot?.board.columns ?? []).map(column => ({
     ...column,
     issues: column.issues.filter((issue) => {
       const matchesText = deferredFilter === ''
         || `${issue.identifier} ${issue.title} ${issue.labels.join(' ')} ${issue.origin?.projectName ?? ''} ${issue.origin?.providerLabel ?? ''}`.toLocaleLowerCase('en-US').includes(deferredFilter)
-      const matchesRuntime = runtimePhaseFilter === undefined
-        || runtimeMap.get(issueKey(issue))?.phase === runtimePhaseFilter
+      const matchesRuntime = runtimeFilter === undefined
+        || (runtimeFilter === 'attention'
+          ? attention.issueKeys.has(issueKey(issue))
+          : runtimeMap.get(issueKey(issue))?.phase === runtimeFilter)
       return matchesText && matchesRuntime && matchesSource(issue.origin, sourceFilter)
     }),
-  })), [deferredFilter, runtimeMap, runtimePhaseFilter, snapshot, sourceFilter])
-  const visibleColumns = columns.filter(column => !column.hidden)
-  const hiddenColumns = columns.filter(column => column.hidden)
+  })), [attention.issueKeys, deferredFilter, runtimeFilter, runtimeMap, snapshot, sourceFilter])
+  const visibleColumns = columns.filter(column => !column.hidden && (viewPreferences.showEmptyColumns || column.issues.length > 0))
+  const hiddenColumns = columns.filter(column => column.hidden && (viewPreferences.showEmptyColumns || column.issues.length > 0))
   const context = snapshot?.context
-  const global = snapshot?.selection.mode === 'global'
+  const updateViewPreferences = (patch: Partial<BoardViewPreferences>): void => {
+    setStoredViewPreferences((current) => {
+      const next = { ...current, [viewScope]: { ...viewPreferences, ...patch } }
+      saveBoardViewPreferences(next)
+      return next
+    })
+  }
+  const resetViewPreferences = (): void => {
+    setStoredViewPreferences((current) => {
+      const next = { ...current, [viewScope]: defaultBoardViewPreferences }
+      saveBoardViewPreferences(next)
+      return next
+    })
+  }
+  const isPending = (key: string): boolean => pendingActions.has(key)
+  const runAction = async <T,>(
+    key: string,
+    action: () => Promise<T>,
+    successMessage?: string,
+    notifyError = true,
+  ): Promise<T> => {
+    setPendingActions(current => new Set([...current, key]))
+    try {
+      const result = await action()
+      if (successMessage !== undefined) setToast({ tone: 'success', message: successMessage })
+      return result
+    } catch (actionError) {
+      if (notifyError) setToast({ tone: 'error', message: dashboardErrorMessage(actionError, t) })
+      throw actionError
+    } finally {
+      setPendingActions((current) => {
+        const next = new Set(current)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+  useEffect(() => {
+    if (toast === undefined) return
+    const timeout = window.setTimeout(() => setToast(undefined), 3600)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
   const clearProjectScopedUi = (): void => {
     setSelectedKey(undefined)
     setTaskEditor(undefined)
     setDeleteTarget(undefined)
     setFilter('')
-    setRuntimePhaseFilter(undefined)
+    setRuntimeFilter(undefined)
     setSourceFilter('all')
   }
   const startProjectScan = async (rootId: string): Promise<void> => {
     setCatalogDialog(undefined)
     setCatalogBusy(true)
     try {
-      setCatalogDialog({ kind: 'scan', result: await onScanProjects(rootId) })
+      setCatalogDialog({ kind: 'scan', result: await runAction('catalog:scan', () => onScanProjects(rootId)) })
     } catch {
-      // The shared controller projects the trusted-host error into the banner.
+      // The action toast keeps this transport error next to the active workflow.
     } finally {
       setCatalogBusy(false)
     }
@@ -256,8 +318,8 @@ export function DashboardSurface({
                 selection={snapshot?.selection}
                 projects={snapshot?.catalog.projects ?? []}
                 loading={loading}
-                onSwitchProject={onSwitchProject}
-                onSwitchGlobal={onSwitchGlobal}
+                onSwitchProject={projectId => runAction(`switch:${projectId}`, () => onSwitchProject(projectId), t('feedback.projectSwitched'))}
+                onSwitchGlobal={() => runAction('switch:global', onSwitchGlobal, t('feedback.globalSwitched'))}
                 onSwitched={clearProjectScopedUi}
                 onManageProjects={() => setTab('projects')}
               />
@@ -273,7 +335,7 @@ export function DashboardSurface({
                     />
                   ) : null}
                   <div className="dshd-filter-wrap">
-                    <button type="button" className="dshd-plain-control" aria-expanded={filterOpen} onClick={() => setFilterOpen(value => !value)}>
+                    <button type="button" className="dshd-plain-control" aria-expanded={filterOpen} onClick={() => { setFilterOpen(value => !value); setDisplayOpen(false) }}>
                       <FilterIcon size={17} /><span>{t('shell.filter')}</span>
                     </button>
                     {filterOpen ? (
@@ -283,25 +345,48 @@ export function DashboardSurface({
                       </div>
                     ) : null}
                   </div>
-                  <button type="button" className="dshd-plain-control" data-active={!showHidden || undefined} onClick={() => setShowHidden(value => !value)}>
-                    <DisplayIcon size={18} /><span>{t('shell.display')}</span>
-                  </button>
+                  {tab === 'board' ? (
+                    <div className="dshd-display-wrap">
+                      <button
+                        type="button"
+                        className="dshd-plain-control"
+                        data-active={!isDefaultBoardViewPreferences(viewPreferences) || displayOpen || undefined}
+                        aria-haspopup="dialog"
+                        aria-expanded={displayOpen}
+                        onClick={() => { setDisplayOpen(value => !value); setFilterOpen(false) }}
+                      >
+                        <DisplayIcon size={18} /><span>{t('shell.display')}</span>
+                      </button>
+                      {displayOpen ? (
+                        <DisplaySettings
+                          preferences={viewPreferences}
+                          onChange={updateViewPreferences}
+                          onReset={resetViewPreferences}
+                          onClose={() => setDisplayOpen(false)}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
                 </>
               )}
-              <button type="button" className="dshd-live-control" aria-label={tab === 'projects' || global ? t('shell.dashboardModeAria') : t('shell.agentCapacityAria')}>
+              <div className="dshd-live-control" role="group" aria-label={tab === 'projects' || global ? t('shell.dashboardModeAria') : t('shell.agentCapacityAria')}>
                 {tab === 'projects' || global ? <MonitorIcon size={17} /> : <span className="dshd-dot dshd-dot-green" />}
                 <span>{tab === 'projects'
                   ? t('shell.currentWorkspace')
                   : `${snapshot?.paused ? t('shell.paused') : t('shell.live')} · ${t('shell.agents', { running: snapshot?.runtime.running ?? 0, capacity: snapshot?.runtime.capacity ?? 0 })}`}</span>
-                <ChevronIcon size={14} />
-              </button>
+              </div>
               {global ? null : <button
                 type="button"
                 className="dshd-pause-control"
-                disabled={loading || snapshot === undefined}
-                onClick={() => onPause(!(snapshot?.paused ?? false))}
+                disabled={loading || snapshot === undefined || isPending('pause')}
+                aria-busy={isPending('pause')}
+                onClick={() => { void runAction(
+                  'pause',
+                  () => onPause(!(snapshot?.paused ?? false)),
+                  snapshot?.paused ? t('feedback.resumed') : t('feedback.paused'),
+                ).catch(() => undefined) }}
               >
-                {snapshot?.paused ? <PlayIcon size={15} /> : <PauseIcon size={15} />}
+                {snapshot?.paused ? <PlayIcon size={15} className={isPending('pause') ? 'dshd-spinning' : undefined} /> : <PauseIcon size={15} className={isPending('pause') ? 'dshd-pulsing' : undefined} />}
                 <span>{snapshot?.paused ? t('shell.resume') : t('shell.pause')}</span>
               </button>}
             </div>
@@ -317,41 +402,59 @@ export function DashboardSurface({
         {tab !== 'board' && tab !== 'runtime' ? null : (
           <RuntimeRail
             snapshot={snapshot}
-            loading={loading}
-            phaseFilter={runtimePhaseFilter}
-            onPhaseFilterChange={(phase) => {
-              setRuntimePhaseFilter(phase)
+            refreshPending={loading || isPending('refresh')}
+            filter={runtimeFilter}
+            attention={attention}
+            onFilterChange={(nextFilter) => {
+              setRuntimeFilter(nextFilter)
               setSelectedKey(undefined)
               setTab('board')
             }}
-            onRefresh={onRefresh}
+            onRefresh={() => runAction('refresh', onRefresh, t('feedback.refreshed'))}
           />
         )}
         <DashboardErrorNotice error={error} className="dshd-error" />
-        {snapshot?.runtime.lastError !== undefined ? <div className="dshd-warning" role="status">{snapshot.runtime.lastError}</div> : null}
+        {snapshot?.runtime.lastError !== undefined && runtimeFilter !== 'attention' ? <div className="dshd-warning" role="status">{snapshot.runtime.lastError}</div> : null}
 
         <div className="dshd-view">
+          {tab === 'board' && runtimeFilter === 'attention' && attention.alerts.length > 0 ? <AttentionAlerts alerts={attention.alerts} /> : null}
           {tab === 'board' ? (
-            <BoardView
-              columns={visibleColumns}
-              hiddenColumns={hiddenColumns}
-              showHidden={showHidden && selectedIssue === undefined}
-              selectedKey={selectedKey}
-              runtimeMap={runtimeMap}
-              onSelect={setSelectedKey}
-              onCreate={snapshot?.taskMutations.canCreate === true ? state => setTaskEditor({ mode: 'create', state }) : undefined}
-              emptyLabel={global ? t('board.globalEmpty') : t('board.empty')}
-            />
+            viewPreferences.layout === 'board' ? (
+              <BoardView
+                columns={visibleColumns}
+                hiddenColumns={hiddenColumns}
+                showHidden={viewPreferences.showTerminalColumns && selectedIssue === undefined}
+                selectedKey={selectedKey}
+                runtimeMap={runtimeMap}
+                preferences={viewPreferences}
+                attentionMode={runtimeFilter === 'attention'}
+                onSelect={setSelectedKey}
+                onCreate={snapshot?.taskMutations.canCreate === true ? state => setTaskEditor({ mode: 'create', state }) : undefined}
+                emptyLabel={global ? t('board.globalEmpty') : t('board.empty')}
+              />
+            ) : (
+              <BoardListView
+                columns={viewPreferences.showTerminalColumns ? [...visibleColumns, ...hiddenColumns] : visibleColumns}
+                selectedKey={selectedKey}
+                runtimeMap={runtimeMap}
+                preferences={viewPreferences}
+                attentionMode={runtimeFilter === 'attention'}
+                onSelect={setSelectedKey}
+                onCreate={snapshot?.taskMutations.canCreate === true ? state => setTaskEditor({ mode: 'create', state }) : undefined}
+                emptyLabel={global ? t('board.globalEmpty') : t('board.empty')}
+              />
+            )
           ) : null}
           {tab === 'runtime' ? <RuntimeView snapshot={snapshot} sourceFilter={sourceFilter} onSelect={(key) => { setSelectedKey(key); setTab('board') }} /> : null}
           {tab === 'projects' ? (
             <ProjectsView
               snapshot={snapshot}
               filter={deferredFilter}
-              showRoots={showHidden}
+              showRoots
               busy={loading || catalogBusy}
+              isRemoveRootPending={id => isPending(`catalog:remove-root:${id}`)}
               onAddRoot={() => setCatalogDialog({ kind: 'add-root' })}
-              onRemoveRoot={onRemoveDiscoveryRoot}
+              onRemoveRoot={id => runAction(`catalog:remove-root:${id}`, () => onRemoveDiscoveryRoot(id), t('feedback.rootRemoved'))}
               onScanRoots={startDiscoveryScan}
               onScan={startProjectScan}
               onRegister={() => setCatalogDialog({ kind: 'register-project' })}
@@ -365,15 +468,18 @@ export function DashboardSurface({
           issue={selectedIssue}
           runtime={selectedRuntime}
           onClose={() => setSelectedKey(undefined)}
-          onRefresh={onRefresh}
-          onStop={onStop}
+          onRefresh={() => runAction('refresh', onRefresh, t('feedback.refreshed'))}
+          refreshPending={isPending('refresh')}
+          onStop={key => runAction(`stop:${key}`, () => onStop(key), t('feedback.agentStopped'))}
+          stopPending={isPending(`stop:${issueKey(selectedIssue)}`)}
           canUpdate={snapshot?.taskMutations.canUpdate === true}
           canDelete={snapshot?.taskMutations.canDelete === true}
           onEdit={() => setTaskEditor({ mode: 'edit', issue: selectedIssue })}
           onDelete={() => setDeleteTarget(selectedIssue)}
           onOpenSession={onOpenSession}
+          enterProjectPending={selectedIssue.origin !== undefined && isPending(`switch:${selectedIssue.origin.projectId}`)}
           onEnterProject={selectedIssue.origin === undefined ? undefined : async () => {
-            await onSwitchProject(selectedIssue.origin!.projectId)
+            await runAction(`switch:${selectedIssue.origin!.projectId}`, () => onSwitchProject(selectedIssue.origin!.projectId), t('feedback.projectSwitched'))
             clearProjectScopedUi()
           }}
         />
@@ -383,8 +489,8 @@ export function DashboardSurface({
           editor={taskEditor}
           states={snapshot?.taskMutations.states ?? []}
           onClose={() => setTaskEditor(undefined)}
-          onCreate={async (input) => { await onCreateTask(input); setTaskEditor(undefined) }}
-          onUpdate={async (nativeRef, changes) => { await onUpdateTask(nativeRef, changes); setTaskEditor(undefined) }}
+          onCreate={async (input) => { await runAction('task:create', () => onCreateTask(input), t('feedback.taskCreated'), false); setTaskEditor(undefined) }}
+          onUpdate={async (nativeRef, changes) => { await runAction(`task:update:${nativeRef}`, () => onUpdateTask(nativeRef, changes), t('feedback.taskUpdated'), false); setTaskEditor(undefined) }}
         />
       ) : null}
       {deleteTarget !== undefined ? (
@@ -392,7 +498,7 @@ export function DashboardSurface({
           issue={deleteTarget}
           onClose={() => setDeleteTarget(undefined)}
           onConfirm={async () => {
-            await onDeleteTask(deleteTarget.nativeRef)
+            await runAction(`task:delete:${deleteTarget.nativeRef}`, () => onDeleteTask(deleteTarget.nativeRef), t('feedback.taskDeleted'), false)
             setDeleteTarget(undefined)
             setSelectedKey(undefined)
           }}
@@ -401,13 +507,13 @@ export function DashboardSurface({
       {catalogDialog?.kind === 'add-root' ? (
         <DiscoveryRootDialog
           onClose={() => setCatalogDialog(undefined)}
-          onSubmit={async (input) => { await onAddDiscoveryRoot(input); setCatalogDialog(undefined) }}
+          onSubmit={async (input) => { await runAction('catalog:add-root', () => onAddDiscoveryRoot(input), t('feedback.rootAdded'), false); setCatalogDialog(undefined) }}
         />
       ) : null}
       {catalogDialog?.kind === 'register-project' ? (
         <RegisterProjectDialog
           onClose={() => setCatalogDialog(undefined)}
-          onSubmit={async (input) => { await onRegisterProject(input); setCatalogDialog(undefined) }}
+          onSubmit={async (input) => { await runAction('catalog:register-project', () => onRegisterProject(input), t('feedback.projectRegistered'), false); setCatalogDialog(undefined) }}
         />
       ) : null}
       {catalogDialog?.kind === 'choose-root' ? (
@@ -421,9 +527,10 @@ export function DashboardSurface({
         <ProjectScanDialog
           result={catalogDialog.result}
           onClose={() => setCatalogDialog(undefined)}
-          onRegister={onRegisterProjectCandidate}
+          onRegister={token => runAction(`catalog:register-candidate:${token}`, () => onRegisterProjectCandidate(token), t('feedback.projectRegistered'), false)}
         />
       ) : null}
+      {toast === undefined ? null : <ActionToast toast={toast} onClose={() => setToast(undefined)} />}
     </div>
   )
 }
@@ -729,63 +836,156 @@ function GlobalSourceFilter({ projects, value, onChange }: {
   )
 }
 
-function RuntimeRail({ snapshot, loading, phaseFilter, onPhaseFilterChange, onRefresh }: {
+function DisplaySettings({ preferences, onChange, onReset, onClose }: {
+  readonly preferences: BoardViewPreferences
+  readonly onChange: (patch: Partial<BoardViewPreferences>) => void
+  readonly onReset: () => void
+  readonly onClose: () => void
+}) {
+  const t = useDashboardTranslation()
+  const titleId = useId()
+  const panelRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Element && event.target.closest('.dshd-display-wrap') !== null) return
+      onClose()
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [onClose])
+  return (
+    <section ref={panelRef} className="dshd-display-popover" role="dialog" aria-labelledby={titleId}>
+      <header><strong id={titleId}>{t('display.title')}</strong><button type="button" aria-label={t('common.close')} onClick={onClose}><CloseIcon size={16} /></button></header>
+      <DisplaySegment
+        label={t('display.layout')}
+        options={[{ value: 'board', label: t('display.board') }, { value: 'list', label: t('display.list') }]}
+        value={preferences.layout}
+        onChange={layout => onChange({ layout })}
+      />
+      <DisplaySegment
+        label={t('display.density')}
+        options={[{ value: 'comfortable', label: t('display.comfortable') }, { value: 'compact', label: t('display.compact') }]}
+        value={preferences.density}
+        onChange={density => onChange({ density })}
+      />
+      <fieldset>
+        <legend>{t('display.groups')}</legend>
+        <DisplayToggle checked={preferences.showTerminalColumns} label={t('display.terminalColumns')} onChange={showTerminalColumns => onChange({ showTerminalColumns })} />
+        <DisplayToggle checked={preferences.showEmptyColumns} label={t('display.emptyColumns')} onChange={showEmptyColumns => onChange({ showEmptyColumns })} />
+      </fieldset>
+      <fieldset>
+        <legend>{t('display.cardProperties')}</legend>
+        <DisplayToggle checked={preferences.showOrigin} label={t('display.origin')} onChange={showOrigin => onChange({ showOrigin })} />
+        <DisplayToggle checked={preferences.showUpdatedAt} label={t('display.updatedAt')} onChange={showUpdatedAt => onChange({ showUpdatedAt })} />
+        <DisplayToggle checked={preferences.showRuntime} label={t('display.runtime')} onChange={showRuntime => onChange({ showRuntime })} />
+      </fieldset>
+      <footer><button type="button" disabled={isDefaultBoardViewPreferences(preferences)} onClick={onReset}>{t('display.reset')}</button><span>{t('display.savedPerContext')}</span></footer>
+    </section>
+  )
+}
+
+function DisplaySegment<T extends string>({ label, options, value, onChange }: {
+  readonly label: string
+  readonly options: readonly { readonly value: T; readonly label: string }[]
+  readonly value: T
+  readonly onChange: (value: T) => void
+}) {
+  return (
+    <div className="dshd-display-section">
+      <span>{label}</span>
+      <div className="dshd-display-segment">
+        {options.map(option => <button type="button" key={option.value} aria-pressed={value === option.value} onClick={() => onChange(option.value)}>{option.label}</button>)}
+      </div>
+    </div>
+  )
+}
+
+function DisplayToggle({ checked, label, onChange }: {
+  readonly checked: boolean
+  readonly label: string
+  readonly onChange: (value: boolean) => void
+}) {
+  return <label className="dshd-display-toggle"><span>{label}</span><input type="checkbox" checked={checked} onChange={event => onChange(event.currentTarget.checked)} /></label>
+}
+
+function RuntimeRail({ snapshot, refreshPending, filter, attention, onFilterChange, onRefresh }: {
   readonly snapshot?: DashboardSnapshot | undefined
-  readonly loading: boolean
-  readonly phaseFilter?: RuntimePhaseFilter | undefined
-  readonly onPhaseFilterChange: (phase: RuntimePhaseFilter | undefined) => void
+  readonly refreshPending: boolean
+  readonly filter?: RuntimeFilter | undefined
+  readonly attention: AttentionSummary
+  readonly onFilterChange: (filter: RuntimeFilter | undefined) => void
   readonly onRefresh: () => Promise<void>
 }) {
   const t = useDashboardTranslation()
   return (
     <div className="dshd-runtime-rail" role="toolbar" aria-label={t('runtime.filtersAria')}>
       <RuntimeFilterMetric
-        phase="running"
+        filter="attention"
+        dot="red"
+        label={t('runtime.attention')}
+        value={attention.count}
+        active={filter === 'attention'}
+        onToggle={onFilterChange}
+      />
+      <span className="dshd-divider" />
+      <RuntimeFilterMetric
+        filter="running"
         dot="green"
         label={t('runtime.running')}
         value={snapshot?.runtime.running ?? 0}
-        active={phaseFilter === 'running'}
-        onToggle={onPhaseFilterChange}
+        active={filter === 'running'}
+        onToggle={onFilterChange}
       />
       <span className="dshd-divider" />
       <RuntimeFilterMetric
-        phase="retrying"
+        filter="retrying"
         dot="amber"
         label={t('runtime.retrying')}
         value={snapshot?.runtime.retrying ?? 0}
-        active={phaseFilter === 'retrying'}
-        onToggle={onPhaseFilterChange}
+        active={filter === 'retrying'}
+        onToggle={onFilterChange}
       />
       <span className="dshd-divider" />
       <RuntimeFilterMetric
-        phase="blocked"
+        filter="blocked"
         dot="red"
         label={t('runtime.blocked')}
         value={snapshot?.runtime.blocked ?? 0}
-        active={phaseFilter === 'blocked'}
-        onToggle={onPhaseFilterChange}
+        active={filter === 'blocked'}
+        onToggle={onFilterChange}
       />
       <span className="dshd-divider" />
       <span>{t('runtime.tokens')}&nbsp;&nbsp;{compactNumber(snapshot?.runtime.tokens.total ?? 0, t)}</span>
       <span className="dshd-divider" />
       <span>{t('runtime.lastRefresh')}&nbsp;&nbsp;{relativeTime(snapshot?.runtime.lastRefreshAt, t)}</span>
-      <button type="button" className="dshd-icon-button" aria-label={t('runtime.refreshDashboardAria')} disabled={loading} onClick={() => { void onRefresh() }}>
-        <RefreshIcon size={15} className={loading ? 'dshd-spinning' : undefined} />
+      <button type="button" className="dshd-icon-button" aria-label={t('runtime.refreshDashboardAria')} aria-busy={refreshPending} disabled={refreshPending} onClick={() => { void onRefresh().catch(() => undefined) }}>
+        <RefreshIcon size={15} className={refreshPending ? 'dshd-spinning' : undefined} />
       </button>
     </div>
   )
 }
 
-function RuntimeFilterMetric({ phase, dot, label, value, active, onToggle }: {
-  readonly phase: RuntimePhaseFilter
+function RuntimeFilterMetric({ filter, dot, label, value, active, onToggle }: {
+  readonly filter: RuntimeFilter
   readonly dot: 'green' | 'amber' | 'red'
   readonly label: string
   readonly value: number
   readonly active: boolean
-  readonly onToggle: (phase: RuntimePhaseFilter | undefined) => void
+  readonly onToggle: (filter: RuntimeFilter | undefined) => void
 }) {
   const t = useDashboardTranslation()
-  const actionLabel = t(active ? 'runtime.clearPhaseFilterAria' : 'runtime.filterByPhaseAria', { phase: label })
+  const actionLabel = filter === 'attention'
+    ? t(active ? 'runtime.clearAttentionFilterAria' : 'runtime.filterByAttentionAria')
+    : t(active ? 'runtime.clearPhaseFilterAria' : 'runtime.filterByPhaseAria', { phase: label })
   return (
     <button
       type="button"
@@ -794,7 +994,7 @@ function RuntimeFilterMetric({ phase, dot, label, value, active, onToggle }: {
       aria-pressed={active}
       aria-label={actionLabel}
       title={actionLabel}
-      onClick={() => onToggle(active ? undefined : phase)}
+      onClick={() => onToggle(active ? undefined : filter)}
     >
       <span className={`dshd-dot dshd-dot-${dot}`} />
       <span>{label}&nbsp;&nbsp;{value}</span>
@@ -815,21 +1015,40 @@ function Metric({ dot, label, value }: {
   )
 }
 
-function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap, onSelect, onCreate, emptyLabel }: {
+function AttentionAlerts({ alerts }: { readonly alerts: readonly AttentionAlert[] }) {
+  const t = useDashboardTranslation()
+  return (
+    <section className="dshd-attention-alerts" aria-labelledby="dshd-attention-title">
+      <header><span className="dshd-dot dshd-dot-red" /><div><strong id="dshd-attention-title">{t('attention.title')}</strong><span>{t('attention.description')}</span></div></header>
+      <div>
+        {alerts.map(alert => (
+          <article key={alert.id} data-kind={alert.kind}>
+            <strong>{alert.kind === 'configuration' ? t('attention.configuration') : alert.kind === 'stale' ? t('attention.stale') : t('attention.runtime')}</strong>
+            <span>{alert.projectName === undefined ? null : <b>{alert.projectName} · </b>}{alert.kind === 'stale' ? t('attention.staleDetail', { time: relativeTime(alert.detail, t) }) : alert.detail}</span>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap, preferences, attentionMode, onSelect, onCreate, emptyLabel }: {
   readonly columns: readonly BoardColumn[]
   readonly hiddenColumns: readonly BoardColumn[]
   readonly showHidden: boolean
   readonly selectedKey?: string | undefined
   readonly runtimeMap: ReadonlyMap<string, IssueRuntimeView>
+  readonly preferences: BoardViewPreferences
+  readonly attentionMode: boolean
   readonly onSelect: (key: string) => void
   readonly onCreate: ((state: string) => void) | undefined
   readonly emptyLabel: string
 }) {
   return (
-    <div className="dshd-board">
+    <div className="dshd-board" data-density={preferences.density}>
       <div className="dshd-columns">
         {columns.map(column => (
-          <IssueColumn key={column.name} column={column} selectedKey={selectedKey} runtimeMap={runtimeMap} onSelect={onSelect} onCreate={onCreate} />
+          <IssueColumn key={column.name} column={column} selectedKey={selectedKey} runtimeMap={runtimeMap} preferences={preferences} attentionMode={attentionMode} onSelect={onSelect} onCreate={onCreate} />
         ))}
         {showHidden && hiddenColumns.length > 0 ? <HiddenColumns columns={hiddenColumns} /> : null}
         {columns.length === 0 || columns.every(column => column.issues.length === 0) ? <div className="dshd-empty">{emptyLabel}</div> : null}
@@ -838,10 +1057,12 @@ function BoardView({ columns, hiddenColumns, showHidden, selectedKey, runtimeMap
   )
 }
 
-const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap, onSelect, onCreate }: {
+const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap, preferences, attentionMode, onSelect, onCreate }: {
   readonly column: BoardColumn
   readonly selectedKey?: string | undefined
   readonly runtimeMap: ReadonlyMap<string, IssueRuntimeView>
+  readonly preferences: BoardViewPreferences
+  readonly attentionMode: boolean
   readonly onSelect: (key: string) => void
   readonly onCreate: ((state: string) => void) | undefined
 }) {
@@ -865,6 +1086,8 @@ const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap,
             issue={issue}
             runtime={runtimeMap.get(issueKey(issue))}
             selected={selectedKey === issueKey(issue)}
+            preferences={preferences}
+            attentionMode={attentionMode}
             onSelect={onSelect}
           />
         ))}
@@ -873,10 +1096,12 @@ const IssueColumn = memo(function IssueColumn({ column, selectedKey, runtimeMap,
   )
 })
 
-const IssueCard = memo(function IssueCard({ issue, runtime, selected, onSelect }: {
+const IssueCard = memo(function IssueCard({ issue, runtime, selected, preferences, attentionMode, onSelect }: {
   readonly issue: TaskIssue
   readonly runtime?: IssueRuntimeView | undefined
   readonly selected: boolean
+  readonly preferences: BoardViewPreferences
+  readonly attentionMode: boolean
   readonly onSelect: (key: string) => void
 }) {
   const t = useDashboardTranslation()
@@ -888,15 +1113,20 @@ const IssueCard = memo(function IssueCard({ issue, runtime, selected, onSelect }
           <span className="dshd-priority-ring" data-priority={priorityTone(issue.priority)} />
           <span>{issue.identifier}</span>
         </div>
-        {issue.origin === undefined ? null : (
+        {!preferences.showOrigin || issue.origin === undefined ? null : (
           <span className="dshd-card-origin" title={`${issue.origin.projectName} · ${issue.origin.providerLabel}`}>
             {issue.origin.providerLabel}<span aria-hidden>·</span>{issue.origin.projectName}
           </span>
         )}
         <strong>{issue.title}</strong>
-        <span className="dshd-updated">{t('board.updated', { time: relativeTime(issue.updatedAt, t) })}</span>
+        {preferences.showUpdatedAt ? <span className="dshd-updated">{t('board.updated', { time: relativeTime(issue.updatedAt, t) })}</span> : null}
       </div>
-      {runtime !== undefined && runtime.phase !== 'blocked' ? (
+      {attentionMode && runtime?.phase === 'blocked' ? (
+        <div className="dshd-card-attention" title={runtime.blocked?.reason}>
+          <span className="dshd-dot dshd-dot-red" />
+          <span>{runtime.blocked?.reason ?? t('runtime.blocked')}</span>
+        </div>
+      ) : preferences.showRuntime && runtime !== undefined && runtime.phase !== 'blocked' ? (
         <div className="dshd-card-runtime">
           <span className={`dshd-dot dshd-dot-${runtime.phase === 'running' ? 'green' : 'amber'}`} />
           <span>{t('runtime.turn', { count: runtime.turnCount })}</span>
@@ -904,12 +1134,63 @@ const IssueCard = memo(function IssueCard({ issue, runtime, selected, onSelect }
           <span>{elapsed(runtime.startedAt)}</span>
           <span>{t('runtime.tokenCount', { count: compactNumber(runtime.tokens.total, t) })}</span>
           {runtime.retry !== undefined ? <span className="dshd-retry-label">{t('runtime.retryIn', { time: countdown(runtime.retry.dueAt, t) })}</span> : null}
-          <span className="dshd-card-more"><MoreIcon size={15} /></span>
         </div>
       ) : null}
     </button>
   )
 })
+
+function BoardListView({ columns, selectedKey, runtimeMap, preferences, attentionMode, onSelect, onCreate, emptyLabel }: {
+  readonly columns: readonly BoardColumn[]
+  readonly selectedKey?: string | undefined
+  readonly runtimeMap: ReadonlyMap<string, IssueRuntimeView>
+  readonly preferences: BoardViewPreferences
+  readonly attentionMode: boolean
+  readonly onSelect: (key: string) => void
+  readonly onCreate: ((state: string) => void) | undefined
+  readonly emptyLabel: string
+}) {
+  const t = useDashboardTranslation()
+  const empty = columns.length === 0 || columns.every(column => column.issues.length === 0)
+  return (
+    <div className="dshd-board-list" data-density={preferences.density}>
+      {columns.map(column => (
+        <section className="dshd-board-list-group" key={column.name}>
+          <header>
+            <span className="dshd-state-ring" style={{ '--dshd-state': stateColor(column.name, column.type, column.color) } as React.CSSProperties} />
+            <strong>{column.name}</strong>
+            <span>{column.issues.length}</span>
+            {onCreate === undefined ? null : (
+              <button type="button" aria-label={t('board.addTaskAria', { state: column.name })} onClick={() => onCreate(column.name)}><PlusIcon size={16} /></button>
+            )}
+          </header>
+          <div>
+            {column.issues.map((issue) => {
+              const key = issueKey(issue)
+              const runtime = runtimeMap.get(key)
+              return (
+                <button type="button" className="dshd-board-list-row" data-selected={selectedKey === key || undefined} key={key} onClick={() => onSelect(key)}>
+                  <span className="dshd-priority-ring" data-priority={priorityTone(issue.priority)} />
+                  <span className="dshd-board-list-id">{issue.identifier}</span>
+                  <strong>{issue.title}</strong>
+                  {!preferences.showOrigin || issue.origin === undefined ? null : <span className="dshd-board-list-origin">{issue.origin.providerLabel} · {issue.origin.projectName}</span>}
+                  {preferences.showRuntime && runtime !== undefined ? (
+                    <span className="dshd-board-list-runtime" title={runtime.blocked?.reason ?? runtime.retry?.error}>
+                      <span className={`dshd-dot dshd-dot-${runtime.phase === 'running' ? 'green' : runtime.phase === 'retrying' ? 'amber' : 'red'}`} />
+                      {attentionMode && runtime.phase === 'blocked' ? runtime.blocked?.reason ?? t('runtime.blocked') : runtimePhaseLabel(runtime.phase, t)}
+                    </span>
+                  ) : null}
+                  {preferences.showUpdatedAt ? <span className="dshd-updated">{relativeTime(issue.updatedAt, t)}</span> : null}
+                </button>
+              )
+            })}
+          </div>
+        </section>
+      ))}
+      {empty ? <div className="dshd-empty">{emptyLabel}</div> : null}
+    </div>
+  )
+}
 
 function HiddenColumns({ columns }: { readonly columns: readonly BoardColumn[] }) {
   const t = useDashboardTranslation()
@@ -944,17 +1225,20 @@ function HiddenColumns({ columns }: { readonly columns: readonly BoardColumn[] }
   )
 }
 
-function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate, canDelete, onEdit, onDelete, onOpenSession, onEnterProject }: {
+function IssueInspector({ issue, runtime, onClose, onRefresh, refreshPending, onStop, stopPending, canUpdate, canDelete, onEdit, onDelete, onOpenSession, enterProjectPending, onEnterProject }: {
   readonly issue: TaskIssue
   readonly runtime?: IssueRuntimeView | undefined
   readonly onClose: () => void
   readonly onRefresh: () => Promise<void>
+  readonly refreshPending: boolean
   readonly onStop: (key: string) => Promise<void>
+  readonly stopPending: boolean
   readonly canUpdate: boolean
   readonly canDelete: boolean
   readonly onEdit: () => void
   readonly onDelete: () => void
   readonly onOpenSession: (sessionId: string) => void
+  readonly enterProjectPending: boolean
   readonly onEnterProject?: (() => Promise<void>) | undefined
 }) {
   const t = useDashboardTranslation()
@@ -1028,9 +1312,9 @@ function IssueInspector({ issue, runtime, onClose, onRefresh, onStop, canUpdate,
       </InspectorSection>
       <footer className="dshd-inspector-actions">
         {onEnterProject === undefined
-          ? <button type="button" className="dshd-danger" disabled={runtime?.phase !== 'running'} onClick={() => { void onStop(issueKey(issue)) }}><StopIcon size={14} />{t('inspector.stopAgent')}</button>
-          : <button type="button" className="dshd-primary" onClick={() => { void onEnterProject().catch(() => undefined) }}><ExternalIcon size={14} />{t('inspector.enterProject')}</button>}
-        <button type="button" onClick={() => { void onRefresh() }}><RefreshIcon size={16} />{t('inspector.refreshIssue')}</button>
+          ? <button type="button" className="dshd-danger" disabled={runtime?.phase !== 'running' || stopPending} aria-busy={stopPending} onClick={() => { void onStop(issueKey(issue)).catch(() => undefined) }}><StopIcon size={14} />{t('inspector.stopAgent')}</button>
+          : <button type="button" className="dshd-primary" disabled={enterProjectPending} aria-busy={enterProjectPending} onClick={() => { void onEnterProject().catch(() => undefined) }}><ExternalIcon size={14} />{t('inspector.enterProject')}</button>}
+        <button type="button" disabled={refreshPending} aria-busy={refreshPending} onClick={() => { void onRefresh().catch(() => undefined) }}><RefreshIcon size={16} className={refreshPending ? 'dshd-spinning' : undefined} />{t('inspector.refreshIssue')}</button>
       </footer>
     </aside>
   )
@@ -1201,11 +1485,12 @@ function RuntimeView({ snapshot, sourceFilter, onSelect }: {
   )
 }
 
-function ProjectsView({ snapshot, filter, showRoots, busy, onAddRoot, onRemoveRoot, onScanRoots, onScan, onRegister }: {
+function ProjectsView({ snapshot, filter, showRoots, busy, isRemoveRootPending, onAddRoot, onRemoveRoot, onScanRoots, onScan, onRegister }: {
   readonly snapshot?: DashboardSnapshot | undefined
   readonly filter: string
   readonly showRoots: boolean
   readonly busy: boolean
+  readonly isRemoveRootPending: (id: string) => boolean
   readonly onAddRoot: () => void
   readonly onRemoveRoot: (id: string) => Promise<void>
   readonly onScanRoots: () => void
@@ -1237,7 +1522,7 @@ function ProjectsView({ snapshot, filter, showRoots, busy, onAddRoot, onRemoveRo
       <div className="dshd-project-table-scroll">
         <div className="dshd-project-table" role="table" aria-label={t('projects.tableAria')}>
           <div className="dshd-project-table-head" role="row">
-            <span>{t('projects.project')}</span><span>{t('projects.workspace')}</span><span>{t('projects.repository')}</span><span>{t('projects.policy')}</span><span>{t('projects.autonomousClaims')}</span><span>{t('runtime.updated')}</span><span />
+            <span>{t('projects.project')}</span><span>{t('projects.workspace')}</span><span>{t('projects.repository')}</span><span>{t('projects.policy')}</span><span>{t('projects.autonomousClaims')}</span><span>{t('runtime.updated')}</span>
           </div>
           {projects.map(project => {
             const repository = project.repositories[0]
@@ -1249,7 +1534,6 @@ function ProjectsView({ snapshot, filter, showRoots, busy, onAddRoot, onRemoveRo
                 <span>{project.policyPath === undefined ? t('common.none') : pathLeaf(project.policyPath)}</span>
                 <span>{project.autonomousClaims ? t('common.on') : t('common.off')}</span>
                 <span>{relativeTime(project.updatedAt, t)}</span>
-                <span className="dshd-project-more"><MoreIcon size={16} /></span>
               </div>
             )
           })}
@@ -1259,15 +1543,18 @@ function ProjectsView({ snapshot, filter, showRoots, busy, onAddRoot, onRemoveRo
       {showRoots ? (
         <section className="dshd-discovery-roots">
           <header><h3>{t('projects.discoveryRoots')}</h3><button type="button" onClick={onAddRoot}>{t('projects.manageRoots')}</button></header>
-          {roots.map(root => (
-            <div className="dshd-discovery-root" key={root.id}>
-              <span><FolderIcon size={17} /><code>{root.path}</code></span>
-              <span>{t('projects.manualConfirmation', { depth: root.maxDepth })}</span>
-              <span>{relativeTime(root.updatedAt, t)}</span>
-              <button type="button" aria-label={t('projects.scanRootAria', { path: root.path })} title={t('projects.scanRootTitle')} disabled={busy} onClick={() => { void onScan(root.id) }}><RefreshIcon size={15} /></button>
-              <button type="button" aria-label={t('projects.removeRootAria', { path: root.path })} title={t('projects.removeRootTitle')} disabled={busy} onClick={() => { void onRemoveRoot(root.id).catch(() => undefined) }}><TrashIcon size={15} /></button>
-            </div>
-          ))}
+          {roots.map(root => {
+            const removePending = isRemoveRootPending(root.id)
+            return (
+              <div className="dshd-discovery-root" key={root.id}>
+                <span><FolderIcon size={17} /><code>{root.path}</code></span>
+                <span>{t('projects.manualConfirmation', { depth: root.maxDepth })}</span>
+                <span>{relativeTime(root.updatedAt, t)}</span>
+                <button type="button" aria-label={t('projects.scanRootAria', { path: root.path })} title={t('projects.scanRootTitle')} disabled={busy} onClick={() => { void onScan(root.id) }}><RefreshIcon size={15} /></button>
+                <button type="button" aria-label={t('projects.removeRootAria', { path: root.path })} title={t('projects.removeRootTitle')} disabled={busy || removePending} aria-busy={removePending} onClick={() => { void onRemoveRoot(root.id).catch(() => undefined) }}><TrashIcon size={15} /></button>
+              </div>
+            )
+          })}
           {roots.length === 0 ? <div className="dshd-table-empty">{t('projects.noRoots')}</div> : null}
         </section>
       ) : null}
@@ -1766,6 +2053,17 @@ function DashboardErrorNotice({ error, className }: {
   return error === undefined
     ? null
     : <div className={className} role="alert">{dashboardErrorMessage(error, t)}</div>
+}
+
+function ActionToast({ toast, onClose }: { readonly toast: ActionToastState; readonly onClose: () => void }) {
+  const t = useDashboardTranslation()
+  return (
+    <div className="dshd-action-toast" data-tone={toast.tone} role={toast.tone === 'error' ? 'alert' : 'status'} aria-live={toast.tone === 'error' ? 'assertive' : 'polite'}>
+      <span className={`dshd-dot dshd-dot-${toast.tone === 'success' ? 'green' : 'red'}`} />
+      <span>{toast.message}</span>
+      <button type="button" aria-label={t('feedback.dismiss')} onClick={onClose}><CloseIcon size={15} /></button>
+    </div>
+  )
 }
 
 export function displayInputTokens(tokens: TokenTotals): number {

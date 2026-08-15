@@ -76,7 +76,7 @@ export class DashboardDataController implements DashboardDataPort {
   }
 
   start = (): (() => void) => {
-    void this.refresh()
+    void this.call('refresh', {}, true)
     if (this.interval === undefined) this.interval = setInterval(() => { void this.readState() }, 5000)
     return () => {
       if (this.interval !== undefined) clearInterval(this.interval)
@@ -85,43 +85,43 @@ export class DashboardDataController implements DashboardDataPort {
   }
 
   async refresh(): Promise<void> {
-    await this.call('refresh', {})
+    await this.call('refresh', {}, false, true)
   }
 
   async setPaused(paused: boolean): Promise<void> {
-    await this.call('pause', { paused })
+    await this.call('pause', { paused }, false, true)
   }
 
   async stopIssue(key: string): Promise<void> {
-    await this.call('stop', { key })
+    await this.call('stop', { key }, false, true)
   }
 
   async createTask(input: CreateTaskInput): Promise<void> {
-    await this.call('createTask', input, true, true)
+    await this.call('createTask', input, false, true)
   }
 
   async updateTask(nativeRef: string, changes: UpdateTaskInput): Promise<void> {
-    await this.call('updateTask', { nativeRef, changes }, true, true)
+    await this.call('updateTask', { nativeRef, changes }, false, true)
   }
 
   async deleteTask(nativeRef: string): Promise<void> {
-    await this.call('deleteTask', { nativeRef }, true, true)
+    await this.call('deleteTask', { nativeRef }, false, true)
   }
 
   async switchProject(projectId: string): Promise<void> {
-    await this.call('switchProject', { projectId }, true, true)
+    await this.call('switchProject', { projectId }, false, true)
   }
 
   async switchGlobal(): Promise<void> {
-    await this.call('switchGlobal', {}, true, true)
+    await this.call('switchGlobal', {}, false, true)
   }
 
   async addDiscoveryRoot(input: AddDiscoveryRootInput): Promise<void> {
-    await this.call('addDiscoveryRoot', input, true, true)
+    await this.call('addDiscoveryRoot', input, false, true)
   }
 
   async removeDiscoveryRoot(id: string): Promise<void> {
-    await this.call('removeDiscoveryRoot', { id }, true, true)
+    await this.call('removeDiscoveryRoot', { id }, false, true)
   }
 
   async scanProjects(rootId: string): Promise<ProjectScanResult> {
@@ -129,11 +129,11 @@ export class DashboardDataController implements DashboardDataPort {
   }
 
   async registerProjectCandidate(token: string): Promise<void> {
-    await this.call('registerProjectCandidate', { token }, true, true)
+    await this.call('registerProjectCandidate', { token }, false, true)
   }
 
   async registerProject(input: RegisterProjectInput): Promise<void> {
-    await this.call('registerProject', input, true, true)
+    await this.call('registerProject', input, false, true)
   }
 
   private async readState(): Promise<void> {
@@ -155,11 +155,9 @@ export class DashboardDataController implements DashboardDataPort {
       this.publish({ snapshot, loading: false })
     } catch (error) {
       const normalized = normalizeDashboardError(error)
-      this.publish({
-        ...this.state,
-        loading: false,
-        error: normalized,
-      })
+      this.publish(propagateError
+        ? { ...this.state, loading: false }
+        : { ...this.state, loading: false, error: normalized })
       if (propagateError) throw normalized
     } finally {
       this.activeRequests -= 1
@@ -169,23 +167,15 @@ export class DashboardDataController implements DashboardDataPort {
 
   private async callProjectScan(rootId: string): Promise<ProjectScanResult> {
     this.activeRequests += 1
-    const { error: _previousError, ...current } = this.state
-    this.publish({ ...current, loading: true })
     try {
       const result = await this.rpc.call('/dsh-dashboard', 'scanProjects', { rootId }) as RpcResult<unknown>
       if (!result.ok) {
         throw dashboardRpcError(result.error.code, result.error.message)
       }
       const scan = parseProjectScan(result.value)
-      this.publish({ ...this.state, loading: false })
       return scan
     } catch (error) {
       const normalized = normalizeDashboardError(error)
-      this.publish({
-        ...this.state,
-        loading: false,
-        error: normalized,
-      })
       throw normalized
     } finally {
       this.activeRequests -= 1
